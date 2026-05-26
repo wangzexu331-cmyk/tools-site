@@ -4,7 +4,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Join-Path $PSScriptRoot "app"
-$Url = "http://127.0.0.1:$Port/"
 
 function Get-MimeType {
   param([string]$Path)
@@ -67,16 +66,27 @@ if (-not (Test-Path (Join-Path $Root "index.html"))) {
   exit 1
 }
 
-$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), $Port)
+$listener = $null
+$actualPort = $Port
+for ($i = 0; $i -lt 20; $i++) {
+  $tryPort = $Port + $i
+  $candidate = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), $tryPort)
+  try {
+    $candidate.Start()
+    $listener = $candidate
+    $actualPort = $tryPort
+    break
+  } catch {
+    try { $candidate.Stop() } catch {}
+  }
+}
 
-try {
-  $listener.Start()
-} catch {
-  Write-Host "端口 $Port 启动失败，可能已经被占用。"
-  Write-Host "你可以先在浏览器打开：$Url"
-  Write-Host $_.Exception.Message
+if ($null -eq $listener) {
+  Write-Host "8080 到 8099 端口都无法启动，请关闭其他本地服务后重试。"
   exit 1
 }
+
+$Url = "http://127.0.0.1:$actualPort/"
 
 Write-Host ""
 Write-Host "隐患整改报告生成系统已启动。"
