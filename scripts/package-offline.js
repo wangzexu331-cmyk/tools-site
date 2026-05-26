@@ -38,6 +38,7 @@ copyRecursive(distDir, appDir);
 copyRecursive(singleHtml, path.join(offlineDir, "打开系统.html"));
 copyRecursive(path.join(root, "offline", "启动系统.bat"), path.join(offlineDir, "启动系统.bat"));
 copyRecursive(path.join(root, "offline", "Start-System.cmd"), path.join(offlineDir, "Start-System.cmd"));
+copyRecursive(path.join(root, "offline", "Open-Direct-HTML.cmd"), path.join(offlineDir, "Open-Direct-HTML.cmd"));
 copyRecursive(path.join(root, "offline", "使用说明.txt"), path.join(offlineDir, "使用说明.txt"));
 copyRecursive(path.join(root, "offline", "server.cjs"), path.join(offlineDir, "server.cjs"));
 copyRecursive(path.join(root, "offline", "server.ps1"), path.join(offlineDir, "server.ps1"));

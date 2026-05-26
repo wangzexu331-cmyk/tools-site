@@ -1951,11 +1951,11 @@ function renderGovernanceInspectionPage(content) {
             <h2>检查任务与通知</h2>
             <p class="hint">先确定检查任务、检查编号、通知文件和检查意见文件。需要录入时展开。</p>
           </div>
-          <span class="code-badge">${editing?.checkNo || previewNextGovernanceCheckNo()}</span>
+          <span id="govCheckNoPreview" class="code-badge">${editing?.checkNo || previewNextGovernanceCheckNo()}</span>
         </summary>
         <form id="governanceInspectionForm" class="form-grid compact-form">
           <label class="field"><span>检查类型</span><select id="govCheckTypeCode" class="select">${governanceState.data.settings.checkTypes.map((type) => `<option value="${type.code}" ${(editing?.checkTypeCode || "NB") === type.code ? "selected" : ""}>${type.name}</option>`).join("")}</select></label>
-          <label class="field"><span>检查编号</span><input id="govCheckNo" class="input" value="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-generated="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" placeholder="例如：ZHJYAF2026-NB-01"></label>
+          <label class="field"><span>检查编号</span><input id="govCheckNo" class="input" value="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-generated="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-original-type="${escapeAttr(editing?.checkTypeCode || "NB")}" data-original-date="${escapeAttr(editing?.checkDate || getTodayDate())}" data-original-no="${escapeAttr(editing?.checkNo || "")}" placeholder="例如：ZHJYAF2026-NB-01"></label>
           <label class="field"><span>检查名称</span><input id="govCheckName" class="input" value="${escapeAttr(editing?.checkName || "")}" placeholder="例如：2026年1月安全环保综合检查"></label>
           <label class="field"><span>检查日期</span><input id="govCheckDate" class="input" type="date" value="${escapeAttr(editing?.checkDate || getTodayDate())}"></label>
           <label class="field"><span>检查地点</span><input id="govCheckPlace" class="input" value="${escapeAttr(editing?.checkPlace || "")}" placeholder="例如：矿山、水冶厂、机关"></label>
@@ -1979,17 +1979,13 @@ function renderGovernanceInspectionPage(content) {
   `;
   content.querySelector("#governanceInspectionForm").addEventListener("submit", saveGovernanceInspectionFromForm);
   content.querySelector("#govCheckTypeCode").addEventListener("change", (event) => {
-    if (!governanceState.editingInspectionId) {
-      syncGeneratedGovernanceCheckNo(event.target.value, content.querySelector("#govCheckDate").value);
-    }
+    syncGeneratedGovernanceCheckNo(event.target.value, content.querySelector("#govCheckDate").value);
   });
   content.querySelector("#govCheckDate").addEventListener("change", (event) => {
-    if (!governanceState.editingInspectionId) {
-      syncGeneratedGovernanceCheckNo(content.querySelector("#govCheckTypeCode").value, event.target.value);
-    }
+    syncGeneratedGovernanceCheckNo(content.querySelector("#govCheckTypeCode").value, event.target.value);
   });
   content.querySelector("#govCheckNo").addEventListener("input", (event) => {
-    content.querySelector(".code-badge").textContent = event.target.value.trim() || "未填写编号";
+    content.querySelector("#govCheckNoPreview").textContent = event.target.value.trim() || "未填写编号";
   });
   content.querySelector("#cancelGovInspectionEdit")?.addEventListener("click", () => {
     governanceState.editingInspectionId = "";
@@ -2130,11 +2126,17 @@ async function saveGovernanceInspectionFromForm(event) {
 
 function syncGeneratedGovernanceCheckNo(typeCode, dateText) {
   const input = document.querySelector("#govCheckNo");
-  const badge = document.querySelector(".code-badge");
+  const badge = document.querySelector("#govCheckNoPreview");
   if (!input || !badge) return;
-  const next = previewNextGovernanceCheckNo(typeCode, dateText);
+  const originalNo = input.dataset.originalNo || "";
+  const originalType = input.dataset.originalType || "";
+  const originalDate = input.dataset.originalDate || "";
+  const isEditing = Boolean(governanceState.editingInspectionId);
+  const typeChanged = isEditing && typeCode !== originalType;
+  const yearChanged = isEditing && String(dateText || "").slice(0, 4) !== String(originalDate || "").slice(0, 4);
+  const next = previewNextGovernanceCheckNo(typeCode, dateText, governanceState.editingInspectionId);
   const current = input.value.trim();
-  if (!current || current === input.dataset.generated) {
+  if (!current || current === input.dataset.generated || current === originalNo || typeChanged || yearChanged) {
     input.value = next;
   }
   input.dataset.generated = next;
@@ -2173,16 +2175,23 @@ function renderGovernanceLedgerPage(content) {
 
 function renderGovernanceHazardEntryPage(content) {
   const inspection = getSelectedGovernanceInspection();
+  const editingHazard = governanceState.data.hazards.find((item) => item.id === governanceState.editingHazardId);
+  const formInspection = editingHazard
+    ? governanceState.data.inspections.find((item) => item.checkNo === editingHazard.checkNo) || inspection
+    : inspection;
+  const previewHazardNo = editingHazard
+    ? editingHazard.hazardNo
+    : formInspection ? previewNextGovernanceHazardNo(formInspection.checkNo) : "未选择检查";
   content.innerHTML = `
     <section class="tool-card glass">
       <div class="section-title">
         <div>
           <h2>${governanceState.editingHazardId ? "编辑检查隐患" : "检查采集录入"}</h2>
-          <p class="hint">${inspection ? `归属检查：${escapeHtml(inspection.checkNo)} ${escapeHtml(inspection.checkName)}。这里只录入问题、整改措施和整改前照片。` : "请先在检查登记中选择一项检查。这里只录入问题、整改措施和整改前照片。"}</p>
+          <p class="hint">${formInspection ? `归属检查：${escapeHtml(formInspection.checkNo)} ${escapeHtml(formInspection.checkName)}。这里只录入问题、整改措施和整改前照片。` : "请先在检查登记中选择一项检查。这里只录入问题、整改措施和整改前照片。"}</p>
         </div>
-        <span class="code-badge">${inspection ? previewNextGovernanceHazardNo(inspection.checkNo) : "未选择检查"}</span>
+        <span id="govHazardNoPreview" class="code-badge">${escapeHtml(previewHazardNo)}</span>
       </div>
-      ${renderGovernanceHazardForm(inspection)}
+      ${renderGovernanceHazardForm(formInspection)}
     </section>
     <section class="tool-card glass">
       <div class="section-title">
@@ -2467,6 +2476,18 @@ function setGovernanceLedgerFields(mode, keys) {
 
 function bindGovernanceHazardEntryEvents(content) {
   content.querySelector("#governanceHazardForm").addEventListener("submit", saveGovernanceHazardFromForm);
+  content.querySelector("#govHazardInspectionId")?.addEventListener("change", (event) => {
+    const inspection = governanceState.data.inspections.find((item) => item.id === event.target.value);
+    const editing = governanceState.data.hazards.find((item) => item.id === governanceState.editingHazardId);
+    const preview = content.querySelector("#govHazardNoPreview");
+    if (preview) {
+      preview.textContent = inspection
+        ? editing && editing.checkNo === inspection.checkNo
+          ? editing.hazardNo
+          : previewNextGovernanceHazardNo(inspection.checkNo, governanceState.editingHazardId)
+        : "未选择检查";
+    }
+  });
   content.querySelector("#govHazardType").addEventListener("change", () => renderGovernanceActiveTab());
   content.querySelector("#cancelGovHazardEdit")?.addEventListener("click", () => {
     governanceState.editingHazardId = "";
@@ -2646,12 +2667,13 @@ async function saveGovernanceHazardFromForm(event) {
     return;
   }
   const editing = governanceState.data.hazards.find((item) => item.id === governanceState.editingHazardId);
+  const inspectionChanged = Boolean(editing && editing.checkNo !== inspection.checkNo);
   const photos = await readGovernancePhotoInput(document.querySelector("#govBeforePhotos").files, editing?.beforePhotos || [], "整改前");
   const now = new Date().toISOString();
   const hazard = {
     id: editing?.id || createId(),
     checkNo: inspection.checkNo,
-    hazardNo: editing?.hazardNo || generateGovernanceHazardNo(inspection.checkNo),
+    hazardNo: editing && !inspectionChanged ? editing.hazardNo : generateGovernanceHazardNo(inspection.checkNo, editing?.id),
     checkType: inspection.checkType,
     checkDate: inspection.checkDate,
     checkPlace: inspection.checkPlace,
@@ -3829,30 +3851,32 @@ function checkTypeCodeFromName(name) {
     || "NB";
 }
 
-function generateGovernanceCheckNo(typeCode = "NB", dateText = getTodayDate()) {
+function generateGovernanceCheckNo(typeCode = "NB", dateText = getTodayDate(), excludeInspectionId = "") {
   const year = String(dateText || getTodayDate()).slice(0, 4);
   const prefix = `ZHJYAF${year}-${typeCode}-`;
   const max = governanceState.data.inspections.reduce((value, item) => {
+    if (excludeInspectionId && item.id === excludeInspectionId) return value;
     const match = String(item.checkNo || "").match(new RegExp(`^${prefix}(\\d{2})$`));
     return match ? Math.max(value, Number(match[1])) : value;
   }, 0);
   return `${prefix}${String(max + 1).padStart(2, "0")}`;
 }
 
-function previewNextGovernanceCheckNo(typeCode = "NB", dateText = getTodayDate()) {
-  return generateGovernanceCheckNo(typeCode, dateText);
+function previewNextGovernanceCheckNo(typeCode = "NB", dateText = getTodayDate(), excludeInspectionId = "") {
+  return generateGovernanceCheckNo(typeCode, dateText, excludeInspectionId);
 }
 
-function generateGovernanceHazardNo(checkNo) {
+function generateGovernanceHazardNo(checkNo, excludeHazardId = "") {
   const max = governanceState.data.hazards.reduce((value, item) => {
+    if (excludeHazardId && item.id === excludeHazardId) return value;
     const match = String(item.hazardNo || "").match(new RegExp(`^${checkNo}-(\\d{3})$`));
     return match ? Math.max(value, Number(match[1])) : value;
   }, 0);
   return `${checkNo}-${String(max + 1).padStart(3, "0")}`;
 }
 
-function previewNextGovernanceHazardNo(checkNo) {
-  return generateGovernanceHazardNo(checkNo);
+function previewNextGovernanceHazardNo(checkNo, excludeHazardId = "") {
+  return generateGovernanceHazardNo(checkNo, excludeHazardId);
 }
 
 function buildInspectionFolderName(inspection) {
