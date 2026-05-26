@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#dbeafe">
+  <title>个人工具箱网站</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar glass" aria-label="工具菜单">
+      <div class="brand">
+        <span class="brand-mark">工</span>
+        <div>
+          <h1>个人工具箱</h1>
+          <p>日常工作小工具</p>
+        </div>
+      </div>
+      <nav id="toolNav" class="tool-nav"></nav>
+    </aside>
+
+    <main class="main-panel">
+      <header class="mobile-header glass">
+        <div>
+          <span class="eyebrow">当前工具</span>
+          <h2 id="mobileTitle">首页</h2>
+        </div>
+        <select id="mobileToolSelect" aria-label="切换工具"></select>
+      </header>
+
+      <section id="app" class="content-view"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
