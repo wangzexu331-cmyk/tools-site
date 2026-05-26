@@ -2193,7 +2193,7 @@ function renderGovernanceHazardEntryPage(content) {
         <div class="actions">
           <button id="importGovernanceTableButton" class="button primary" type="button">导入隐患治理表</button>
           <button id="goLedgerFromEntryButton" class="button" type="button">进入隐患确认</button>
-          <input id="governanceTableExcelInput" class="hidden" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
+          <input id="governanceTableExcelInput" class="hidden" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" multiple>
         </div>
       </div>
     </section>
@@ -3392,55 +3392,104 @@ async function importGovernanceInspectionJson(event) {
 }
 
 async function importGovernanceTableExcel(event) {
-  const file = event.target.files[0];
+  const files = Array.from(event.target.files || []);
   event.target.value = "";
-  if (!file) return;
+  if (!files.length) return;
 
   try {
     if (!window.XLSX) {
       throw new Error("Excel 组件未加载，请刷新页面后重试");
     }
-    const parsed = await parseGovernanceTableExcelFile(file);
-    const sameInspection = governanceState.data.inspections.find((item) => (
-      item.checkNo === parsed.inspection.checkNo ||
-      (item.checkName === parsed.inspection.checkName &&
-        item.checkDate === parsed.inspection.checkDate &&
-        item.checkPlace === parsed.inspection.checkPlace)
-    ));
-
-    if (sameInspection) {
-      const overwrite = window.confirm(`已存在相同检查：${sameInspection.checkNo} ${sameInspection.checkName}\n\n确定：覆盖该检查及其隐患\n取消：停止导入`);
-      if (!overwrite) return;
-      parsed.inspection.id = sameInspection.id;
-      parsed.inspection.checkNo = sameInspection.checkNo;
-      governanceState.data.inspections = governanceState.data.inspections.filter((item) => item.id !== sameInspection.id);
-      governanceState.data.hazards = governanceState.data.hazards.filter((item) => item.checkNo !== sameInspection.checkNo);
-    } else if (!window.confirm(`即将导入检查：${parsed.inspection.checkNo} ${parsed.inspection.checkName}\n共 ${parsed.hazards.length} 条隐患，是否继续？`)) {
+    const parsedItems = [];
+    for (const file of files) {
+      parsedItems.push(await parseGovernanceTableExcelFile(file));
+    }
+    const totalHazards = parsedItems.reduce((sum, item) => sum + item.hazards.length, 0);
+    const existingMatches = parsedItems
+      .map((parsed) => ({
+        parsed,
+        sameInspection: findSameGovernanceInspection(parsed.inspection)
+      }))
+      .filter((item) => item.sameInspection);
+    const overwriteExisting = existingMatches.length
+      ? window.confirm(`发现 ${existingMatches.length} 份治理表与现有检查重复。\n\n确定：覆盖重复检查并继续导入\n取消：跳过重复检查，只导入新的治理表`)
+      : false;
+    if (!window.confirm(`即将批量导入 ${parsedItems.length} 份隐患治理表，共 ${totalHazards} 条隐患，是否继续？`)) {
       return;
     }
 
-    parsed.hazards = parsed.hazards.map((hazard, index) => ({
-      ...hazard,
-      checkNo: parsed.inspection.checkNo,
-      checkType: parsed.inspection.checkType,
-      checkDate: parsed.inspection.checkDate,
-      checkPlace: parsed.inspection.checkPlace,
-      hazardNo: `${parsed.inspection.checkNo}-${String(index + 1).padStart(3, "0")}`
-    }));
-    parsed.inspection.hazardCount = parsed.hazards.length;
-    parsed.inspection.folderName = buildInspectionFolderName(parsed.inspection);
+    const importedInspections = [];
+    const importedHazards = [];
+    const reservedCheckNos = new Set(governanceState.data.inspections.map((item) => item.checkNo).filter(Boolean));
+    let skipped = 0;
+    for (const parsed of parsedItems) {
+      const sameInspection = findSameGovernanceInspection(parsed.inspection);
+      if (sameInspection && !overwriteExisting) {
+        skipped += 1;
+        continue;
+      }
+      if (sameInspection) {
+        parsed.inspection.id = sameInspection.id;
+        parsed.inspection.checkNo = sameInspection.checkNo;
+        governanceState.data.inspections = governanceState.data.inspections.filter((item) => item.id !== sameInspection.id);
+        governanceState.data.hazards = governanceState.data.hazards.filter((item) => item.checkNo !== sameInspection.checkNo);
+      } else {
+        parsed.inspection.checkNo = resolveImportedGovernanceCheckNo(parsed.inspection, parsed.importMeta, reservedCheckNos);
+      }
+      reservedCheckNos.add(parsed.inspection.checkNo);
+      parsed.hazards = parsed.hazards.map((hazard, index) => ({
+        ...hazard,
+        checkNo: parsed.inspection.checkNo,
+        checkType: parsed.inspection.checkType,
+        checkDate: parsed.inspection.checkDate,
+        checkPlace: parsed.inspection.checkPlace,
+        hazardNo: `${parsed.inspection.checkNo}-${String(index + 1).padStart(3, "0")}`
+      }));
+      parsed.inspection.hazardCount = parsed.hazards.length;
+      parsed.inspection.folderName = buildInspectionFolderName(parsed.inspection);
+      importedInspections.push(parsed.inspection);
+      importedHazards.push(...parsed.hazards);
+    }
 
-    governanceState.data.inspections.unshift(parsed.inspection);
-    governanceState.data.hazards.push(...parsed.hazards);
-    mergeGovernanceSettingsFromHazards(parsed.hazards);
-    governanceState.selectedInspectionId = parsed.inspection.id;
+    if (!importedInspections.length) {
+      showToast("没有导入新的治理表");
+      return;
+    }
+    governanceState.data.inspections.unshift(...importedInspections);
+    governanceState.data.hazards.push(...importedHazards);
+    mergeGovernanceSettingsFromHazards(importedHazards);
+    governanceState.selectedInspectionId = importedInspections[0].id;
     governanceState.activeTab = "ledger";
     await saveGovernanceData();
-    showToast(`已导入 ${parsed.hazards.length} 条隐患`);
+    showToast(`已导入 ${importedInspections.length} 份治理表、${importedHazards.length} 条隐患${skipped ? `，跳过 ${skipped} 份重复表` : ""}`);
     renderHazardGovernanceModule();
   } catch (error) {
     showToast(error.message || "隐患治理表导入失败");
   }
+}
+
+function findSameGovernanceInspection(inspection) {
+  return governanceState.data.inspections.find((item) => (
+    item.checkNo === inspection.checkNo ||
+    (item.checkName === inspection.checkName &&
+      item.checkDate === inspection.checkDate &&
+      item.checkPlace === inspection.checkPlace)
+  ));
+}
+
+function resolveImportedGovernanceCheckNo(inspection, importMeta = {}, reservedCheckNos = new Set()) {
+  if (importMeta.hasStandardCheckNo && inspection.checkNo && !reservedCheckNos.has(inspection.checkNo)) {
+    return inspection.checkNo;
+  }
+  const year = String(inspection.checkDate || getTodayDate()).slice(0, 4);
+  const typeCode = inspection.checkTypeCode || checkTypeCodeFromName(inspection.checkType);
+  const prefix = `ZHJYAF${year}-${typeCode}-`;
+  let max = 0;
+  for (const checkNo of reservedCheckNos) {
+    const match = String(checkNo || "").match(new RegExp(`^${prefix}(\\d{2})$`));
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `${prefix}${String(max + 1).padStart(2, "0")}`;
 }
 
 function parseGovernanceTableExcelFile(file) {
@@ -3475,7 +3524,8 @@ function parseGovernanceTableWorkbook(workbook, fileName = "隐患治理表.xlsx
   const meta = parseGovernanceTableMeta(rows.slice(0, headerIndex), fileName);
   const now = new Date().toISOString();
   const checkTypeCode = inferGovernanceTableTypeCode(meta);
-  const checkNo = isStandardGovernanceCheckNo(meta.serialNo)
+  const hasStandardCheckNo = isStandardGovernanceCheckNo(meta.serialNo);
+  const checkNo = hasStandardCheckNo
     ? meta.serialNo
     : generateGovernanceCheckNo(checkTypeCode, meta.checkDate || getTodayDate());
   const inspection = normalizeGovernanceInspection({
@@ -3538,7 +3588,7 @@ function parseGovernanceTableWorkbook(workbook, fileName = "隐患治理表.xlsx
   }
   inspection.hazardCount = hazards.length;
   inspection.folderName = buildInspectionFolderName(inspection);
-  return { inspection, hazards };
+  return { inspection, hazards, importMeta: { hasStandardCheckNo } };
 }
 
 function findGovernanceTableHeaderIndex(rows) {
@@ -3608,13 +3658,21 @@ function parseGovernanceDateInput(value) {
     if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
   }
   const text = governanceCellToText(value);
-  let match = text.match(/(\d{4})[年\\/-](\d{1,2})[月\\/-](\d{1,2})/);
-  if (match) return `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
-  match = text.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (match) return `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
-  match = text.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/);
-  if (match) return `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
+  let match = text.match(/(\d{4})\s*[年./\\-]\s*(\d{1,2})\s*(?:月|[./\\-])\s*(\d{1,2})\s*(?:日|号)?/);
+  if (match) return buildGovernanceDateString(match[1], match[2], match[3]);
+  match = text.match(/(\d{4})(\d{2})(\d{2})/);
+  if (match) return buildGovernanceDateString(match[1], match[2], match[3]);
+  match = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/);
+  if (match) return buildGovernanceDateString(String(new Date().getFullYear()), match[1], match[2]);
   return "";
+}
+
+function buildGovernanceDateString(year, month, day) {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (!y || !m || !d || m < 1 || m > 12 || d < 1 || d > 31) return "";
+  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
 function formatDateInputFromDate(date) {
