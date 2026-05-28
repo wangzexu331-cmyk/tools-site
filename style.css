@@ -1036,9 +1036,21 @@ button {
 }
 
 .governance-tabs {
+  position: sticky;
+  top: 12px;
+  z-index: 24;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 10px 14px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.governance-sticky-panel {
+  position: sticky;
+  top: 72px;
+  z-index: 22;
 }
 
 .workflow-strip {
@@ -1116,6 +1128,79 @@ button {
 .governance-tab.active {
   color: #fff;
   background: linear-gradient(135deg, var(--blue), var(--cyan));
+}
+
+.ledger-inline-control {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.ledger-inline-date {
+  min-width: 122px;
+}
+
+.ledger-inline-status {
+  min-width: 88px;
+  max-width: 96px;
+}
+
+.ledger-inline-platform {
+  min-width: 104px;
+}
+
+.ledger-status-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 168px;
+  white-space: nowrap;
+}
+
+.ledger-inline-textarea {
+  min-width: 180px;
+  min-height: 54px;
+  resize: vertical;
+}
+
+.task-hazard-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.task-hazard-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.task-hazard-item > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #1d4ed8;
+  border-radius: 10px;
+  background: rgba(219, 234, 254, 0.9);
+  font-weight: 800;
+}
+
+.task-hazard-item strong,
+.task-hazard-item p,
+.task-hazard-item small {
+  display: block;
+}
+
+.task-hazard-item p {
+  margin: 4px 0;
+  line-height: 1.45;
 }
 
 .governance-grid {
@@ -1522,13 +1607,13 @@ button {
 
 .governance-table th,
 .governance-table td {
-  padding: 11px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.22);
   color: #172033;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.4;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .governance-table th {
@@ -1551,7 +1636,7 @@ button {
 }
 
 .governance-table .field-responsibleDept {
-  min-width: 86px;
+  min-width: 108px;
   white-space: nowrap;
 }
 
@@ -1571,13 +1656,26 @@ button {
 }
 
 .governance-table .field-hazardNo {
-  min-width: 130px;
+  width: 104px;
+  min-width: 104px;
+  max-width: 112px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .governance-table .field-seq,
-.governance-table .field-autoStatus,
 .governance-table .field-platformCloseStatus {
   white-space: nowrap;
+}
+
+.governance-table .field-autoStatus {
+  min-width: 178px;
+  white-space: nowrap;
+}
+
+.governance-table .field-platformCloseStatus {
+  min-width: 118px;
 }
 
 .table-actions {
@@ -1588,9 +1686,9 @@ button {
 }
 
 .table-actions .icon-button {
-  flex: 0 0 26px;
-  width: 26px;
-  height: 26px;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
   border-radius: 9px;
   box-shadow: 0 4px 10px rgba(31, 41, 55, 0.06);
 }
@@ -1599,11 +1697,12 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 26px;
-  padding: 0 9px;
+  min-height: 21px;
+  padding: 0 6px;
   color: #1f2937;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -1633,7 +1732,33 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+  margin: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.rectification-card-head::-webkit-details-marker {
+  display: none;
+}
+
+.rectification-card-head::after {
+  content: "展开";
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 5px 10px;
+  color: #1d4ed8;
+  border-radius: 999px;
+  background: rgba(219, 234, 254, 0.88);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rectification-collapse[open] .rectification-card-head {
   margin-bottom: 16px;
+}
+
+.rectification-collapse[open] .rectification-card-head::after {
+  content: "收起";
 }
 
 .rectification-card-head p {
@@ -1728,6 +1853,75 @@ button {
   font-family: inherit;
 }
 
+.svg-converter-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.svg-control-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.svg-drop-zone {
+  padding: 14px;
+  border: 1px dashed rgba(37, 99, 235, 0.32);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.svg-size-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.svg-output-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.svg-output-row span {
+  padding: 7px 10px;
+  color: #344054;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.56);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.svg-preview-panel {
+  min-width: 0;
+}
+
+.svg-preview-canvas {
+  display: grid;
+  place-items: center;
+  min-height: 520px;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  border-radius: 18px;
+  background:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%);
+  background-color: rgba(255, 255, 255, 0.44);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+}
+
+.svg-preview-canvas img {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  background: #fff;
+  box-shadow: 0 16px 38px rgba(31, 41, 55, 0.16);
+}
+
 .hidden {
   display: none !important;
 }
@@ -1810,8 +2004,15 @@ button {
   }
 
   .governance-tabs {
+    top: 74px;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 42vh;
+    overflow-y: auto;
+  }
+
+  .governance-sticky-panel {
+    top: 250px;
   }
 
   .workflow-strip {
@@ -2032,6 +2233,16 @@ button {
 
   .photo-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .svg-converter-grid,
+  .svg-size-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .svg-preview-canvas {
+    min-height: 360px;
+    padding: 10px;
   }
 
   .voice-button {

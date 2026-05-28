@@ -64,6 +64,11 @@ const tools = {
     icon: "治",
     render: renderHazardGovernanceModule
   },
+  svgToPdf: {
+    title: "SVG 转 PDF",
+    icon: "图",
+    render: renderSvgPdfTool
+  },
   future: {
     title: "后续工具预留",
     icon: "+",
@@ -180,6 +185,7 @@ const governanceState = {
   ledgerFieldSettingsOpen: false,
   ledgerDisplayFields: readStoredGovernanceLedgerFields(GOVERNANCE_LEDGER_DISPLAY_FIELDS_KEY, "display"),
   ledgerExportFields: readStoredGovernanceLedgerFields(GOVERNANCE_LEDGER_EXPORT_FIELDS_KEY, "export"),
+  taskResponsibleDept: "",
   ledgerFilters: {
     checkTypeCode: "",
     checkNo: "",
@@ -200,6 +206,23 @@ const mobileSelect = document.querySelector("#mobileToolSelect");
 const mobileTitle = document.querySelector("#mobileTitle");
 const toast = document.querySelector("#toast");
 let toastTimer = null;
+
+const svgPdfState = {
+  fileName: "",
+  svgText: "",
+  previewUrl: "",
+  outputBlobUrl: "",
+  printableHtmlUrl: "",
+  outputMode: ""
+};
+
+const PAPER_PRESETS = {
+  a1: { name: "A1", widthMm: 594, heightMm: 841 },
+  a2: { name: "A2", widthMm: 420, heightMm: 594 },
+  a3: { name: "A3", widthMm: 297, heightMm: 420 },
+  a4: { name: "A4", widthMm: 210, heightMm: 297 },
+  custom: { name: "自定义", widthMm: 594, heightMm: 841 }
+};
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
@@ -275,6 +298,573 @@ function renderFutureTools() {
       <p>在 app.js 的 tools 对象中增加一个工具配置，再编写对应 render 函数即可接入左侧菜单和手机端切换器。</p>
     </section>
   `;
+}
+
+function renderSvgPdfTool() {
+  app.innerHTML = `
+    <div class="tool-layout svg-pdf-tool">
+      <section class="tool-card glass">
+        <div class="section-title">
+          <div>
+            <h2>SVG 转 PDF</h2>
+            <p class="hint">选择本地 SVG 文件，按画布尺寸导出 PDF。默认页面为 A1 竖版。</p>
+          </div>
+        </div>
+        <div class="svg-converter-grid">
+          <div class="svg-control-panel">
+            <label class="field svg-drop-zone" for="svgFileInput">
+              <span>SVG 文件</span>
+              <input id="svgFileInput" class="input file-input" type="file" accept=".svg,image/svg+xml">
+              <small id="svgFileName" class="field-tip">${svgPdfState.fileName ? escapeHtml(svgPdfState.fileName) : "未选择文件，转换过程只在当前浏览器本地完成。"}</small>
+            </label>
+
+            <div class="form-grid compact-form svg-size-grid">
+              <label class="field">
+                <span>纸张</span>
+                <select id="svgPaperPreset" class="select">
+                  <option value="a1" selected>A1 594 x 841 mm</option>
+                  <option value="a2">A2 420 x 594 mm</option>
+                  <option value="a3">A3 297 x 420 mm</option>
+                  <option value="a4">A4 210 x 297 mm</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>方向</span>
+                <select id="svgOrientation" class="select">
+                  <option value="portrait" selected>竖版</option>
+                  <option value="landscape">横版</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>DPI</span>
+                <input id="svgDpiInput" class="input" type="number" min="36" max="600" step="1" value="150">
+              </label>
+              <label class="field">
+                <span>宽度 mm</span>
+                <input id="svgWidthMmInput" class="input" type="number" min="1" step="0.1" value="594">
+              </label>
+              <label class="field">
+                <span>高度 mm</span>
+                <input id="svgHeightMmInput" class="input" type="number" min="1" step="0.1" value="841">
+              </label>
+              <label class="field">
+                <span>页面背景</span>
+                <select id="svgBackgroundInput" class="select">
+                  <option value="white" selected>白色</option>
+                </select>
+              </label>
+              <label class="field span-2">
+                <span>适配方式</span>
+                <select id="svgFitModeInput" class="select">
+                  <option value="contain" selected>完整显示，保留比例</option>
+                  <option value="cover">填满页面，保留比例并裁切</option>
+                  <option value="stretch">拉伸铺满，不留白</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="svg-output-row">
+              <span id="svgOutputSize">输出尺寸：3508 x 4967 px</span>
+              <span id="svgOutputMeta">A1 @ 150 DPI</span>
+            </div>
+            <p id="svgStatusMessage" class="field-tip">提示：横向 SVG 建议选择“横版”后再转换。</p>
+
+            <div class="actions">
+              <button id="svgConvertButton" class="button primary" type="button" ${svgPdfState.svgText ? "" : "disabled"}>转换并预览</button>
+              <button id="svgDownloadButton" class="button" type="button" disabled>下载 PDF</button>
+              <button id="svgResetButton" class="button ghost" type="button">恢复 A1 默认</button>
+            </div>
+          </div>
+
+          <div class="svg-preview-panel">
+            <div id="svgPreviewCanvas" class="svg-preview-canvas">
+              ${svgPdfState.previewUrl ? `<img src="${escapeAttr(svgPdfState.previewUrl)}" alt="PDF 页面预览">` : `<div class="empty-state subtle"><h3>等待上传 SVG</h3><p>转换后会在这里显示 PDF 页面预览。</p></div>`}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+
+  bindSvgPdfEvents();
+  updateSvgOutputSize();
+}
+
+function bindSvgPdfEvents() {
+  document.querySelector("#svgFileInput")?.addEventListener("change", handleSvgFileInput);
+  document.querySelector("#svgPaperPreset")?.addEventListener("change", applySvgPaperPreset);
+  document.querySelector("#svgOrientation")?.addEventListener("change", () => {
+    applySvgPaperPreset();
+    updateSvgOutputSize();
+  });
+  ["#svgDpiInput", "#svgWidthMmInput", "#svgHeightMmInput"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", updateSvgOutputSize);
+  });
+  document.querySelector("#svgConvertButton")?.addEventListener("click", convertSvgToPdf);
+  document.querySelector("#svgDownloadButton")?.addEventListener("click", downloadConvertedPdf);
+  document.querySelector("#svgResetButton")?.addEventListener("click", resetSvgDefaults);
+}
+
+function handleSvgFileInput(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  if (!file.name.toLowerCase().endsWith(".svg") && file.type !== "image/svg+xml") {
+    showToast("请选择 SVG 文件");
+    event.target.value = "";
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    svgPdfState.fileName = file.name;
+    svgPdfState.svgText = String(reader.result || "");
+    revokeSvgOutputUrl();
+    document.querySelector("#svgFileName").textContent = file.name;
+    document.querySelector("#svgConvertButton").disabled = false;
+    document.querySelector("#svgDownloadButton").disabled = true;
+    setSvgStatus(getSvgFileHint(svgPdfState.svgText));
+    renderSvgPreviewPlaceholder("已读取 SVG，可以转换预览。");
+    showToast("SVG 已读取");
+  };
+  reader.onerror = () => showToast("读取 SVG 失败");
+  reader.readAsText(file, "utf-8");
+}
+
+function applySvgPaperPreset() {
+  const presetKey = document.querySelector("#svgPaperPreset")?.value || "a1";
+  if (presetKey === "custom") {
+    return;
+  }
+
+  const preset = PAPER_PRESETS[presetKey] || PAPER_PRESETS.a1;
+  const orientation = document.querySelector("#svgOrientation")?.value || "portrait";
+  const width = orientation === "landscape" ? preset.heightMm : preset.widthMm;
+  const height = orientation === "landscape" ? preset.widthMm : preset.heightMm;
+  document.querySelector("#svgWidthMmInput").value = width;
+  document.querySelector("#svgHeightMmInput").value = height;
+  updateSvgOutputSize();
+}
+
+function resetSvgDefaults() {
+  document.querySelector("#svgPaperPreset").value = "a1";
+  document.querySelector("#svgOrientation").value = "portrait";
+  document.querySelector("#svgDpiInput").value = "150";
+  document.querySelector("#svgBackgroundInput").value = "white";
+  applySvgPaperPreset();
+  showToast("已恢复 A1 默认画布");
+}
+
+function getSvgCanvasConfig() {
+  const widthMm = Math.max(1, Number(document.querySelector("#svgWidthMmInput")?.value) || 594);
+  const heightMm = Math.max(1, Number(document.querySelector("#svgHeightMmInput")?.value) || 841);
+  const dpi = Math.min(600, Math.max(36, Number(document.querySelector("#svgDpiInput")?.value) || 150));
+  return {
+    widthMm,
+    heightMm,
+    dpi,
+    widthPx: Math.round(widthMm / 25.4 * dpi),
+    heightPx: Math.round(heightMm / 25.4 * dpi),
+    background: document.querySelector("#svgBackgroundInput")?.value || "white",
+    fitMode: document.querySelector("#svgFitModeInput")?.value || "contain"
+  };
+}
+
+function updateSvgOutputSize() {
+  const config = getSvgCanvasConfig();
+  const sizeText = document.querySelector("#svgOutputSize");
+  if (sizeText) {
+    sizeText.textContent = `输出尺寸：${config.widthPx} x ${config.heightPx} px`;
+  }
+  const metaText = document.querySelector("#svgOutputMeta");
+  const presetKey = document.querySelector("#svgPaperPreset")?.value || "a1";
+  const presetName = PAPER_PRESETS[presetKey]?.name || "自定义";
+  if (metaText) {
+    metaText.textContent = `${presetName} @ ${config.dpi} DPI`;
+  }
+}
+
+async function convertSvgToPdf() {
+  if (!svgPdfState.svgText) {
+    showToast("请先选择 SVG 文件");
+    return;
+  }
+
+  const config = getSvgCanvasConfig();
+  if (config.widthPx * config.heightPx > 100000000) {
+    showToast("画布像素过大，请降低 DPI 或尺寸");
+    return;
+  }
+
+  const convertButton = document.querySelector("#svgConvertButton");
+  convertButton.disabled = true;
+  convertButton.textContent = "转换中...";
+
+  try {
+    const normalizedSvg = normalizeSvgForRasterizing(svgPdfState.svgText);
+    const image = await loadSvgImage(normalizedSvg);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = config.widthPx;
+    canvas.height = config.heightPx;
+    const ctx = canvas.getContext("2d");
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const fit = getImagePlacement(image.naturalWidth || image.width, image.naturalHeight || image.height, canvas.width, canvas.height, config.fitMode);
+    ctx.drawImage(image, fit.x, fit.y, fit.width, fit.height);
+
+    let pngBlob;
+    let jpegBlob;
+    try {
+      pngBlob = await canvasToBlob(canvas, "image/png");
+      jpegBlob = await canvasToBlob(canvas, "image/jpeg", 0.95);
+    } catch (error) {
+      if (isCanvasTaintedError(error)) {
+        preparePrintableSvgFallback(normalizedSvg, config);
+        return;
+      }
+      throw error;
+    }
+
+    const pdfBlob = await createPdfFromJpeg(jpegBlob, config);
+    revokeSvgOutputUrl();
+    svgPdfState.outputBlobUrl = URL.createObjectURL(pdfBlob);
+    svgPdfState.previewUrl = URL.createObjectURL(pngBlob);
+    svgPdfState.outputMode = "download";
+    document.querySelector("#svgPreviewCanvas").innerHTML = `<img src="${escapeAttr(svgPdfState.previewUrl)}" alt="PDF 页面预览">`;
+    document.querySelector("#svgDownloadButton").disabled = false;
+    document.querySelector("#svgDownloadButton").textContent = "下载 PDF";
+    setSvgStatus("转换完成，可以下载 PDF。");
+    showToast("转换完成");
+  } catch (error) {
+    console.error("SVG 转 PDF 失败", error);
+    const message = error?.message || "转换失败，请检查 SVG 文件";
+    setSvgStatus(`${message}。如果文件来自网页截图或流程图导出，请尝试刷新页面后重试，并选择横版。`);
+    showToast(message);
+  } finally {
+    convertButton.disabled = false;
+    convertButton.textContent = "转换并预览";
+  }
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("SVG 无法作为图片渲染，可能包含复杂 HTML 内容"));
+    image.src = src;
+  });
+}
+
+async function loadSvgImage(svgText) {
+  const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+  const svgUrl = URL.createObjectURL(blob);
+  try {
+    return await loadImageElement(svgUrl);
+  } catch (error) {
+    const dataUrl = svgTextToDataUrl(svgText);
+    return loadImageElement(dataUrl);
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+function svgTextToDataUrl(svgText) {
+  const bytes = new TextEncoder().encode(svgText);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
+function normalizeSvgForRasterizing(svgText) {
+  const parser = new DOMParser();
+  const documentSvg = parser.parseFromString(svgText, "image/svg+xml");
+  const parserError = documentSvg.querySelector("parsererror");
+  if (parserError) {
+    throw new Error("SVG 文件格式无法解析");
+  }
+
+  const svgElement = documentSvg.documentElement;
+  svgElement.querySelectorAll("[externalResourcesRequired]").forEach((element) => {
+    element.removeAttribute("externalResourcesRequired");
+  });
+  svgElement.querySelectorAll("script").forEach((element) => element.remove());
+
+  if (!svgElement.getAttribute("xmlns")) {
+    svgElement.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+  if (!svgElement.getAttribute("xmlns:xlink")) {
+    svgElement.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  }
+
+  return new XMLSerializer().serializeToString(svgElement);
+}
+
+function getImagePlacement(sourceWidth, sourceHeight, targetWidth, targetHeight, fitMode) {
+  if (fitMode === "stretch") {
+    return {
+      width: targetWidth,
+      height: targetHeight,
+      x: 0,
+      y: 0
+    };
+  }
+
+  const scale = fitMode === "cover"
+    ? Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight)
+    : Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const width = Math.round(sourceWidth * scale);
+  const height = Math.round(sourceHeight * scale);
+  return {
+    width,
+    height,
+    x: Math.round((targetWidth - width) / 2),
+    y: Math.round((targetHeight - height) / 2)
+  };
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Canvas export failed"));
+      }
+    }, type, quality);
+  });
+}
+
+function isCanvasTaintedError(error) {
+  return /tainted canvases|may not be exported|operation is insecure/i.test(String(error?.message || error));
+}
+
+function preparePrintableSvgFallback(svgText, config) {
+  revokeSvgOutputUrl();
+  const html = createPrintableSvgHtml(svgText, config);
+  svgPdfState.printableHtmlUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  svgPdfState.outputMode = "print";
+  document.querySelector("#svgPreviewCanvas").innerHTML = `
+    <div class="empty-state subtle">
+      <h3>已切换为打印保存 PDF</h3>
+      <p>这个 SVG 含有 HTML 内容，浏览器禁止从画布直接导出。请点击按钮后在打印窗口选择“另存为 PDF”。</p>
+    </div>
+  `;
+  const downloadButton = document.querySelector("#svgDownloadButton");
+  downloadButton.disabled = false;
+  downloadButton.textContent = "打开打印保存 PDF";
+  setSvgStatus("此文件触发浏览器画布安全限制，已改用打印保存 PDF。打印目标请选择“另存为 PDF”，纸张选择对应 A1/横版。");
+  showToast("请用打印窗口保存 PDF");
+}
+
+function createPrintableSvgHtml(svgText, config) {
+  const escapedTitle = escapeHtml((svgPdfState.fileName || "SVG 转 PDF").replace(/\.svg$/i, ""));
+  const preserveAspectRatio = {
+    contain: "xMidYMid meet",
+    cover: "xMidYMid slice",
+    stretch: "none"
+  }[config.fitMode] || "xMidYMid meet";
+  const printableSvgText = applySvgPreserveAspectRatio(svgText, preserveAspectRatio);
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>${escapedTitle}</title>
+  <style>
+    @page {
+      size: ${config.widthMm}mm ${config.heightMm}mm;
+      margin: 0;
+    }
+    html,
+    body {
+      width: ${config.widthMm}mm;
+      height: ${config.heightMm}mm;
+      margin: 0;
+      background: #fff;
+    }
+    body {
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+    svg {
+      display: block;
+      width: ${config.widthMm}mm;
+      height: ${config.heightMm}mm;
+      max-width: 100%;
+      max-height: 100%;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+${printableSvgText}
+<script>
+  window.addEventListener("load", () => setTimeout(() => window.print(), 300));
+</script>
+</body>
+</html>`;
+}
+
+function applySvgPreserveAspectRatio(svgText, preserveAspectRatio) {
+  const parser = new DOMParser();
+  const documentSvg = parser.parseFromString(svgText, "image/svg+xml");
+  const svgElement = documentSvg.documentElement;
+  svgElement.setAttribute("preserveAspectRatio", preserveAspectRatio);
+  return new XMLSerializer().serializeToString(svgElement);
+}
+
+async function createPdfFromJpeg(jpegBlob, config) {
+  const imageBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+  const pageWidth = config.widthMm / 25.4 * 72;
+  const pageHeight = config.heightMm / 25.4 * 72;
+  const contentBytes = pdfAsciiBytes(`q\n${formatPdfNumber(pageWidth)} 0 0 ${formatPdfNumber(pageHeight)} 0 0 cm\n/Im1 Do\nQ\n`);
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${formatPdfNumber(pageWidth)} ${formatPdfNumber(pageHeight)}] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>`,
+    {
+      dictionary: `<< /Type /XObject /Subtype /Image /Width ${config.widthPx} /Height ${config.heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>`,
+      stream: imageBytes
+    },
+    {
+      dictionary: `<< /Length ${contentBytes.length} >>`,
+      stream: contentBytes
+    }
+  ];
+  return new Blob([buildPdfBytes(objects)], { type: "application/pdf" });
+}
+
+function buildPdfBytes(objects) {
+  const chunks = [pdfAsciiBytes("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")];
+  const offsets = [0];
+  let length = chunks[0].length;
+
+  objects.forEach((object, index) => {
+    offsets.push(length);
+    const header = pdfAsciiBytes(`${index + 1} 0 obj\n`);
+    chunks.push(header);
+    length += header.length;
+
+    if (typeof object === "string") {
+      const body = pdfAsciiBytes(`${object}\nendobj\n`);
+      chunks.push(body);
+      length += body.length;
+      return;
+    }
+
+    const beforeStream = pdfAsciiBytes(`${object.dictionary}\nstream\n`);
+    const afterStream = pdfAsciiBytes("\nendstream\nendobj\n");
+    chunks.push(beforeStream, object.stream, afterStream);
+    length += beforeStream.length + object.stream.length + afterStream.length;
+  });
+
+  const xrefOffset = length;
+  const xrefRows = offsets.map((offset, index) => (
+    index === 0 ? "0000000000 65535 f " : `${String(offset).padStart(10, "0")} 00000 n `
+  ));
+  const trailer = [
+    `xref\n0 ${objects.length + 1}`,
+    ...xrefRows,
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>`,
+    "startxref",
+    String(xrefOffset),
+    "%%EOF"
+  ].join("\n");
+  chunks.push(pdfAsciiBytes(`${trailer}\n`));
+
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const output = new Uint8Array(totalLength);
+  let cursor = 0;
+  chunks.forEach((chunk) => {
+    output.set(chunk, cursor);
+    cursor += chunk.length;
+  });
+  return output;
+}
+
+function pdfAsciiBytes(text) {
+  const bytes = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index += 1) {
+    bytes[index] = text.charCodeAt(index) & 0xff;
+  }
+  return bytes;
+}
+
+function formatPdfNumber(value) {
+  return Number(value.toFixed(4)).toString();
+}
+
+function downloadConvertedPdf() {
+  if (svgPdfState.outputMode === "print" && svgPdfState.printableHtmlUrl) {
+    window.open(svgPdfState.printableHtmlUrl, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  if (!svgPdfState.outputBlobUrl) {
+    showToast("请先转换 PDF");
+    return;
+  }
+
+  const baseName = (svgPdfState.fileName || "svg-output").replace(/\.svg$/i, "");
+  const link = document.createElement("a");
+  link.href = svgPdfState.outputBlobUrl;
+  link.download = `${baseName}-${formatDateForFile(new Date())}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+function renderSvgPreviewPlaceholder(message) {
+  const panel = document.querySelector("#svgPreviewCanvas");
+  if (!panel) {
+    return;
+  }
+  panel.innerHTML = `<div class="empty-state subtle"><h3>${escapeHtml(message)}</h3><p>点击“转换并预览”生成 PDF。</p></div>`;
+}
+
+function setSvgStatus(message) {
+  const status = document.querySelector("#svgStatusMessage");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function getSvgFileHint(svgText) {
+  const hasForeignObject = /<foreignObject[\s>]/i.test(svgText);
+  const sizeMb = new Blob([svgText]).size / 1024 / 1024;
+  if (hasForeignObject && sizeMb > 10) {
+    return "已读取大型 HTML 型 SVG，转换会稍慢；建议选择横版，必要时降低 DPI。";
+  }
+  if (hasForeignObject) {
+    return "已读取 HTML 型 SVG，若转换失败请降低 DPI 或使用横版。";
+  }
+  return "已读取 SVG，可以转换预览。";
+}
+
+function revokeSvgOutputUrl() {
+  if (svgPdfState.outputBlobUrl) {
+    URL.revokeObjectURL(svgPdfState.outputBlobUrl);
+  }
+  if (svgPdfState.previewUrl) {
+    URL.revokeObjectURL(svgPdfState.previewUrl);
+  }
+  if (svgPdfState.printableHtmlUrl) {
+    URL.revokeObjectURL(svgPdfState.printableHtmlUrl);
+  }
+  svgPdfState.outputBlobUrl = "";
+  svgPdfState.previewUrl = "";
+  svgPdfState.printableHtmlUrl = "";
+  svgPdfState.outputMode = "";
 }
 
 async function renderReportCenter() {
@@ -654,6 +1244,7 @@ async function handleCombinedReportAction(action) {
 
 function createDefaultReportConfig(task = null, previousConfig = null) {
   const dateText = task ? formatChineseDate(task.date) : formatChineseDate(getTodayDate());
+  const makerDateText = task ? formatChineseDate(addDaysToDate(task.date, 1)) : formatChineseDate(addDaysToDate(getTodayDate(), 1));
   const previousName = previousConfig?.inspectionName;
   const inspectionName = previousName || (task?.sourceTasks ? "安全环保综合检查" : (task ? `${task.location || "现场"}安全检查` : "安全检查"));
   return {
@@ -662,7 +1253,7 @@ function createDefaultReportConfig(task = null, previousConfig = null) {
     inspectionDateText: dateText,
     participants: task?.leader || "",
     makerDepartment: "安防环保部",
-    makerDate: dateText,
+    makerDate: makerDateText,
     reportTitle: `关于落实${inspectionName}意见的情况报告`,
     headerCompanyName: "锦原铀业有限公司",
     recipientDepartment: "安防环保部",
@@ -838,7 +1429,8 @@ function reportRun(d, text, options = {}) {
     text: text || "",
     font: options.font || "仿宋",
     size: options.size || REPORT_DOC.bodySize,
-    bold: Boolean(options.bold)
+    bold: Boolean(options.bold),
+    color: options.color
   });
 }
 
@@ -846,16 +1438,24 @@ function reportParagraph(d, children, options = {}) {
   const paragraphChildren = Array.isArray(children)
     ? children
     : [reportRun(d, children, options.run || {})];
+  const spacing = options.singleLine
+    ? {
+        line: 240,
+        lineRule: d.LineRuleType.AUTO,
+        before: options.before || 0,
+        after: options.after || 0
+      }
+    : {
+        line: REPORT_DOC.line28,
+        lineRule: d.LineRuleType.EXACT,
+        before: options.before || 0,
+        after: options.after || 0
+      };
   return new d.Paragraph({
     children: paragraphChildren,
     alignment: options.alignment || d.AlignmentType.JUSTIFIED,
     indent: options.firstLine === false ? undefined : { firstLine: REPORT_DOC.firstLineIndent },
-    spacing: {
-      line: REPORT_DOC.line28,
-      lineRule: d.LineRuleType.EXACT,
-      before: options.before || 0,
-      after: options.after || 0
-    },
+    spacing,
     heading: options.heading,
     outlineLevel: options.outlineLevel,
     border: options.border
@@ -896,9 +1496,9 @@ function reportHazardTitleParagraph(d, text) {
   return reportParagraph(d, [reportRun(d, text, {
     font: "楷体",
     size: REPORT_DOC.bodySize,
-    bold: true
+    bold: true,
+    color: "000000"
   })], {
-    heading: d.HeadingLevel.HEADING_2,
     outlineLevel: 2
   });
 }
@@ -930,12 +1530,68 @@ function reportLineBorder(d) {
   };
 }
 
+function reportRedHeadBorder(d) {
+  return {
+    color: "C00000",
+    space: 1,
+    style: d.BorderStyle.SINGLE,
+    size: 12
+  };
+}
+
+function buildFirstPageRedHeader(d, headerCompanyName) {
+  return new d.Header({
+    children: [
+      new d.Paragraph({
+        children: [reportRun(d, headerCompanyName, {
+          font: "方正小标宋简体",
+          size: 52,
+          bold: true,
+          color: "C00000"
+        })],
+        alignment: d.AlignmentType.CENTER,
+        border: { bottom: reportRedHeadBorder(d) },
+        spacing: { before: 160, after: 140 }
+      })
+    ]
+  });
+}
+
+function buildBlankFirstPageFooter(d) {
+  return new d.Footer({
+    children: [
+      new d.Paragraph({ children: [new d.TextRun("")] })
+    ]
+  });
+}
+
+function buildReportDefaultFooter(d) {
+  return new d.Footer({
+    children: [
+      new d.Paragraph({
+        border: { top: reportLineBorder(d) },
+        spacing: { after: 80 },
+        children: [new d.TextRun("")]
+      }),
+      new d.Paragraph({
+        children: [
+          reportRun(d, "第 ", { font: "仿宋", size: 24 }),
+          new d.TextRun({ children: [d.PageNumber.CURRENT], font: "仿宋", size: 24 }),
+          reportRun(d, " 页", { font: "仿宋", size: 24 })
+        ],
+        alignment: d.AlignmentType.CENTER
+      })
+    ]
+  });
+}
+
 function buildReportDocument(d, children, options = {}) {
   const headerCompanyName = options.headerCompanyName || "锦原铀业有限公司";
   return new d.Document({
     features: { updateFields: true },
     sections: [{
       properties: {
+        titlePage: true,
         page: {
           size: { width: REPORT_DOC.a4Width, height: REPORT_DOC.a4Height },
           margin: {
@@ -947,35 +1603,11 @@ function buildReportDocument(d, children, options = {}) {
         }
       },
       headers: {
-        default: new d.Header({
-          children: [
-            new d.Paragraph({
-              children: [reportRun(d, headerCompanyName, { font: "仿宋", size: 24 })],
-              alignment: d.AlignmentType.CENTER,
-              border: { bottom: reportLineBorder(d) },
-              spacing: { after: 120 }
-            })
-          ]
-        })
+        first: buildFirstPageRedHeader(d, headerCompanyName)
       },
       footers: {
-        default: new d.Footer({
-          children: [
-            new d.Paragraph({
-              border: { top: reportLineBorder(d) },
-              spacing: { after: 80 },
-              children: [new d.TextRun("")]
-            }),
-            new d.Paragraph({
-              children: [
-                reportRun(d, "第 ", { font: "仿宋", size: 24 }),
-                new d.TextRun({ children: [d.PageNumber.CURRENT], font: "仿宋", size: 24 }),
-                reportRun(d, " 页", { font: "仿宋", size: 24 })
-              ],
-              alignment: d.AlignmentType.CENTER
-            })
-          ]
-        })
+        first: buildBlankFirstPageFooter(d),
+        default: buildReportDefaultFooter(d)
       },
       children
     }]
@@ -1133,7 +1765,7 @@ async function exportGovernanceTable(task) {
   }
 
   showToast("正在生成隐患治理表...");
-  const workbook = new ExcelJS.Workbook();
+  const workbook = new window.ExcelJS.Workbook();
   let worksheet;
   const templateLoaded = await loadGovernanceTemplate(workbook);
   worksheet = workbook.worksheets[0] || workbook.addWorksheet("隐患治理表");
@@ -1174,28 +1806,46 @@ function buildFallbackGovernanceSheet(worksheet) {
     { key: "person", width: 14 },
     { key: "time", width: 14 },
     { key: "acceptor", width: 16 },
-    { key: "handling", width: 28 },
-    { key: "k", width: 8 },
-    { key: "l", width: 8 }
+    { key: "handling", width: 28 }
   ];
-  worksheet.mergeCells("A1:L1");
-  worksheet.getCell("A1").value = "隐患排查整治台账";
-  worksheet.getCell("A1").font = { bold: true, size: 18 };
+  worksheet.mergeCells("A1:J1");
+  worksheet.mergeCells("A2:J2");
+  worksheet.mergeCells("A3:J3");
+  worksheet.mergeCells("A4:D4");
+  worksheet.mergeCells("H4:J4");
+  worksheet.mergeCells("A5:J5");
+  worksheet.getCell("A1").value = "编号：Q/JYGS.AF-ZD-09-JL-02";
+  worksheet.getCell("A2").value = "序号：";
+  worksheet.getCell("A3").value = "隐患治理表";
+  worksheet.getCell("A4").value = "被检查单位：";
+  worksheet.getCell("H4").value = "检查时间：";
+  worksheet.getCell("A5").value = "参检人员：";
+  worksheet.getCell("A3").font = { bold: true, size: 18 };
   worksheet.getCell("A1").alignment = { horizontal: "center" };
-  worksheet.addRow([]);
-  worksheet.addRow(["序号", "隐患名称", "隐患等级", "拟采取的治理措施", "督办领导", "治理责任单位或部门", "治理责任人", "治理时间", "整治完成验收人", "处理措施", "", ""]);
-  worksheet.mergeCells("J3:L3");
+  worksheet.getCell("A3").alignment = { horizontal: "center" };
+  worksheet.addRow(["序号", "隐患名称", "隐患等级", "拟采取的治理措施", "督办领导", "治理责任单位或部门", "治理责任人", "治理时间", "整治完成验收人", "处理措施"]);
 }
 
 function fillGovernanceSheet(worksheet, task) {
   const config = reportState.config;
-  worksheet.getCell("A1").value = `${config.checkedUnit || task.location || ""}检查隐患治理表`;
   const headerRow = findGovernanceHeaderRow(worksheet);
   const startRow = headerRow + 1;
+  const footerBlockStart = findGovernanceFooterBlockStartRow(worksheet, startRow);
+  const footerSignatureRow = findGovernanceSignatureRow(worksheet, startRow);
+  const detailStyle = captureGovernanceRowStyle(worksheet, startRow);
+  const signatureStyle = captureGovernanceRowStyle(worksheet, footerSignatureRow || footerBlockStart);
+  const footerStyle = captureGovernanceRowStyle(worksheet, (footerSignatureRow || footerBlockStart) + 1);
+  const outputFooterStart = startRow + task.hazards.length;
+  const clearEndRow = Math.max(outputFooterStart + 3, footerBlockStart + 3);
+
+  fillGovernanceSheetHeader(worksheet, task);
+  unmergeGovernanceRangesFromRow(worksheet, startRow);
+  clearGovernanceRows(worksheet, startRow, clearEndRow);
+
   task.hazards.forEach((hazard, index) => {
     const rowNumber = startRow + index;
-    const row = worksheet.getRow(rowNumber);
-      row.values = [
+    applyGovernanceRowStyle(worksheet, rowNumber, detailStyle);
+    const rowValues = [
       index + 1,
       formatHazardProblemForOutput(task, hazard),
       hazard.level || "一般",
@@ -1204,18 +1854,12 @@ function fillGovernanceSheet(worksheet, task) {
       hazard.responsibleUnit || "",
       hazard.responsiblePerson || "",
       hazard.deadline || "",
-      "",
-      config.handlingMeasure || "限期整改",
-      "",
+      hazard.acceptor || "",
       ""
     ];
-    try {
-      worksheet.unMergeCells(`J${rowNumber}:L${rowNumber}`);
-    } catch (error) {
-      // ignore non-merged row
-    }
-    worksheet.mergeCells(`J${rowNumber}:L${rowNumber}`);
-    row.eachCell((cell) => {
+    rowValues.forEach((value, columnIndex) => {
+      const cell = worksheet.getCell(rowNumber, columnIndex + 1);
+      cell.value = value;
       cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
       cell.border = {
         top: { style: "thin" },
@@ -1224,8 +1868,223 @@ function fillGovernanceSheet(worksheet, task) {
         right: { style: "thin" }
       };
     });
+    const row = worksheet.getRow(rowNumber);
     row.height = Math.max(32, Math.ceil(formatHazardProblemForOutput(task, hazard).length / 18) * 18);
   });
+
+  writeGovernanceFooterRows(worksheet, outputFooterStart, task, signatureStyle, footerStyle);
+}
+
+function fillGovernanceSheetHeader(worksheet, task) {
+  const config = reportState.config;
+  const inspectionName = config.inspectionName || task.name || "安全检查";
+  const title = inspectionName.includes("隐患治理表")
+    ? inspectionName
+    : `${inspectionName}隐患治理表`;
+  setGovernanceCellIfExists(worksheet, "A1", "编号：Q/JYGS.AF-ZD-09-JL-02");
+  setGovernanceCellIfExists(worksheet, "A2", `序号：${config.governanceNo || task.checkNo || ""}`);
+  setGovernanceCellIfExists(worksheet, "A3", title);
+  setGovernanceCellIfExists(worksheet, "A4", `被检查单位：${config.checkedUnit || task.location || ""}`);
+  setGovernanceCellIfExists(worksheet, "H4", `检查时间：${config.inspectionDateText || formatChineseDate(task.date)}`);
+  setGovernanceCellIfExists(worksheet, "A5", `参检人员：${config.participants || task.leader || ""}`);
+}
+
+function setGovernanceCellIfExists(worksheet, address, value) {
+  const cell = worksheet.getCell(address);
+  cell.value = value;
+  cell.alignment = {
+    ...(cell.alignment || {}),
+    vertical: "middle",
+    wrapText: true
+  };
+}
+
+function findGovernanceSignatureRow(worksheet, startRow) {
+  for (let rowNumber = startRow; rowNumber <= Math.min(worksheet.rowCount || 1, startRow + 80); rowNumber += 1) {
+    const text = getGovernanceRowText(worksheet, rowNumber);
+    if (/单位负责人|分管负责人|分管领导|部门负责人|制表人/.test(text)) {
+      return rowNumber;
+    }
+  }
+  return 0;
+}
+
+function findGovernanceFooterBlockStartRow(worksheet, startRow) {
+  const signatureRow = findGovernanceSignatureRow(worksheet, startRow);
+  if (!signatureRow) {
+    return startRow;
+  }
+  const previousRowText = getGovernanceRowText(worksheet, signatureRow - 1);
+  const previousMerges = getGovernanceMergeRanges(worksheet)
+    .map(parseExcelRangeBounds)
+    .filter(Boolean)
+    .some((range) => range.top <= signatureRow - 1 && range.bottom >= signatureRow - 1);
+  return !previousRowText && previousMerges ? signatureRow - 1 : signatureRow;
+}
+
+function getGovernanceRowText(worksheet, rowNumber) {
+  const parts = [];
+  for (let column = 1; column <= 10; column += 1) {
+    const value = worksheet.getCell(rowNumber, column).value;
+    parts.push(typeof value === "object" && value?.result ? value.result : value || "");
+  }
+  return parts.join("");
+}
+
+function captureGovernanceRowStyle(worksheet, rowNumber, columnCount = 10) {
+  const row = worksheet.getRow(rowNumber);
+  return {
+    height: row.height,
+    cells: Array.from({ length: columnCount }, (_, index) => cloneGovernanceCellStyle(worksheet.getCell(rowNumber, index + 1)))
+  };
+}
+
+function cloneGovernanceCellStyle(cell) {
+  return {
+    style: clonePlainObject(cell.style),
+    font: clonePlainObject(cell.font),
+    fill: clonePlainObject(cell.fill),
+    border: clonePlainObject(cell.border),
+    alignment: clonePlainObject(cell.alignment),
+    numFmt: cell.numFmt
+  };
+}
+
+function clonePlainObject(value) {
+  return value ? JSON.parse(JSON.stringify(value)) : undefined;
+}
+
+function applyGovernanceRowStyle(worksheet, rowNumber, rowStyle, columnCount = 10) {
+  const row = worksheet.getRow(rowNumber);
+  if (rowStyle?.height) {
+    row.height = rowStyle.height;
+  }
+  for (let column = 1; column <= columnCount; column += 1) {
+    const cell = worksheet.getCell(rowNumber, column);
+    const style = rowStyle?.cells?.[column - 1];
+    if (!style) continue;
+    if (style.style) cell.style = clonePlainObject(style.style);
+    if (style.font) cell.font = clonePlainObject(style.font);
+    if (style.fill) cell.fill = clonePlainObject(style.fill);
+    if (style.border) cell.border = clonePlainObject(style.border);
+    if (style.alignment) cell.alignment = clonePlainObject(style.alignment);
+    if (style.numFmt) cell.numFmt = style.numFmt;
+  }
+}
+
+function clearGovernanceRows(worksheet, startRow, endRow, columnCount = 10) {
+  for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
+    for (let column = 1; column <= columnCount; column += 1) {
+      worksheet.getCell(rowNumber, column).value = null;
+    }
+  }
+}
+
+function unmergeGovernanceRangesFromRow(worksheet, startRow) {
+  getGovernanceMergeRanges(worksheet).forEach((range) => {
+    const bounds = parseExcelRangeBounds(range);
+    if (bounds && bounds.bottom >= startRow) {
+      try {
+        worksheet.unMergeCells(range);
+      } catch (error) {
+        // The range may already be unmerged by a previous operation.
+      }
+    }
+  });
+}
+
+function getGovernanceMergeRanges(worksheet) {
+  return [...(worksheet.model?.merges || [])];
+}
+
+function writeGovernanceFooterRows(worksheet, startRow, task, signatureStyle, footerStyle) {
+  const config = reportState.config;
+  const signatureRow = startRow;
+  const departmentRow = startRow + 1;
+  const dateRow = startRow + 2;
+  const makerDepartment = config.makerDepartment || "安防环保部";
+  const makerDate = config.makerDate || formatChineseDate(addDaysToDate(task.date || getTodayDate(), 1));
+
+  applyGovernanceRowStyle(worksheet, signatureRow, signatureStyle);
+  applyGovernanceRowStyle(worksheet, departmentRow, footerStyle);
+  applyGovernanceRowStyle(worksheet, dateRow, footerStyle);
+  clearGovernanceRows(worksheet, signatureRow, dateRow);
+
+  setGovernanceMergedCell(worksheet, `A${signatureRow}:B${signatureRow}`, "单位负责人：", { horizontal: "left" });
+  setGovernanceMergedCell(worksheet, `C${signatureRow}:D${signatureRow}`, "分管负责人：", { horizontal: "left" });
+  setGovernanceMergedCell(worksheet, `E${signatureRow}:G${signatureRow}`, "部门负责人：", { horizontal: "left" });
+  setGovernanceMergedCell(worksheet, `H${signatureRow}:J${signatureRow}`, "制表人：", { horizontal: "left" });
+  setGovernanceMergedCell(worksheet, `G${departmentRow}:H${departmentRow}`, makerDepartment, { horizontal: "center" });
+  setGovernanceMergedCell(worksheet, `G${dateRow}:H${dateRow}`, makerDate, { horizontal: "center" });
+}
+
+function setGovernanceMergedCell(worksheet, range, value, alignment = {}) {
+  ensureGovernanceMerge(worksheet, range);
+  const bounds = parseExcelRangeBounds(range);
+  const cell = worksheet.getCell(bounds.top, bounds.left);
+  cell.value = value;
+  cell.alignment = {
+    vertical: "middle",
+    wrapText: true,
+    ...alignment
+  };
+}
+
+function ensureGovernanceMerge(worksheet, range) {
+  const target = parseExcelRangeBounds(range);
+  if (!target) return;
+  getGovernanceMergeRanges(worksheet).forEach((existingRange) => {
+    const existing = parseExcelRangeBounds(existingRange);
+    if (existing && rangesOverlap(existing, target)) {
+      try {
+        worksheet.unMergeCells(existingRange);
+      } catch (error) {
+        // ignore; merge operation below will surface real issues if any remain
+      }
+    }
+  });
+  worksheet.mergeCells(range);
+}
+
+function parseExcelRangeBounds(range) {
+  const [startAddress, endAddress = startAddress] = String(range || "").split(":");
+  const start = parseExcelCellAddress(startAddress);
+  const end = parseExcelCellAddress(endAddress);
+  if (!start || !end) return null;
+  return {
+    top: Math.min(start.row, end.row),
+    bottom: Math.max(start.row, end.row),
+    left: Math.min(start.column, end.column),
+    right: Math.max(start.column, end.column)
+  };
+}
+
+function parseExcelCellAddress(address) {
+  const match = String(address || "").match(/^([A-Z]+)(\d+)$/i);
+  if (!match) return null;
+  return {
+    column: excelColumnToNumber(match[1]),
+    row: Number(match[2])
+  };
+}
+
+function excelColumnToNumber(letters) {
+  return String(letters || "").toUpperCase().split("").reduce((total, letter) => {
+    return total * 26 + letter.charCodeAt(0) - 64;
+  }, 0);
+}
+
+function rangesOverlap(a, b) {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function addDaysToDate(value, days) {
+  const date = new Date(`${String(value || getTodayDate()).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return getTodayDate();
+  }
+  date.setDate(date.getDate() + days);
+  return formatDateInputFromDate(date);
 }
 
 function formatHazardProblemForOutput(task, hazard) {
@@ -1330,11 +2189,13 @@ async function buildPhotoTable(beforePhotos, afterPhotos) {
     children: [
       buildPhotoCell(d, reportParagraph(d, [reportRun(d, "整改前", { font: "仿宋", size: REPORT_DOC.captionSize })], {
         alignment: d.AlignmentType.CENTER,
-        firstLine: false
+        firstLine: false,
+        singleLine: true
       })),
       buildPhotoCell(d, reportParagraph(d, [reportRun(d, "整改后", { font: "仿宋", size: REPORT_DOC.captionSize })], {
         alignment: d.AlignmentType.CENTER,
-        firstLine: false
+        firstLine: false,
+        singleLine: true
       }))
     ]
   }));
@@ -1573,24 +2434,24 @@ async function renderHazardGovernanceModule() {
           <button id="syncCaptureButton" class="button" type="button">同步采集数据</button>
         </div>
         ${renderGovernanceWorkflowBar()}
-        <div class="governance-tabs" role="tablist">
-          ${[
-            ["dashboard", "工作总览"],
-            ["ledger", "隐患总台账"],
-            ["inspection", "检查任务"],
-            ["hazardEntry", "检查采集"],
-            ["reports", "治理表/报告"],
-            ["tasks", "任务下发"],
-            ["feedback", "反馈导入"],
-            ["rectification", "整改汇总"],
-            ["scripts", "任务话术生成"],
-            ["settings", "基础设置"],
-            ["backup", "备份恢复"]
-          ].map(([key, label]) => `
-            <button class="governance-tab ${governanceState.activeTab === key ? "active" : ""}" type="button" data-tab="${key}">${label}</button>
-          `).join("")}
-        </div>
       </section>
+      <nav class="governance-tabs glass" role="tablist" aria-label="隐患排查治理模块切换">
+        ${[
+          ["dashboard", "工作总览"],
+          ["ledger", "隐患总台账"],
+          ["inspection", "检查任务"],
+          ["hazardEntry", "检查采集"],
+          ["reports", "治理表/报告"],
+          ["tasks", "任务下发"],
+          ["feedback", "反馈导入"],
+          ["rectification", "整改汇总"],
+          ["scripts", "任务话术生成"],
+          ["settings", "基础设置"],
+          ["backup", "备份恢复"]
+        ].map(([key, label]) => `
+          <button class="governance-tab ${governanceState.activeTab === key ? "active" : ""}" type="button" data-tab="${key}">${label}</button>
+        `).join("")}
+      </nav>
       <section id="governanceContent"></section>
     </div>
   `;
@@ -2155,7 +3016,7 @@ function renameGovernanceHazardNoPrefix(hazardNo, oldCheckNo, newCheckNo) {
 function renderGovernanceLedgerPage(content) {
   const filtered = getFilteredGovernanceHazards();
   content.innerHTML = `
-    <section class="tool-card glass">
+    <section class="tool-card glass governance-sticky-panel">
       <div class="section-title">
         <div>
           <h2>隐患总台账</h2>
@@ -2340,6 +3201,7 @@ function renderGovernanceLedgerTable(hazards) {
 
   return `
     <section class="tool-card glass ledger-table-card">
+      ${renderGovernanceInlineDatalists()}
       <div class="governance-table-wrap">
         <table class="governance-table" style="min-width:${tableMinWidth}px">
           <thead>
@@ -2368,15 +3230,71 @@ function renderGovernanceLedgerTable(hazards) {
 
 function renderGovernanceLedgerCell(field, hazard, index) {
   const value = getGovernanceLedgerFieldValue(field, hazard, index);
+  const control = renderGovernanceLedgerInlineControl(field.key, hazard, value);
+  if (control) return control;
   if (field.key === "autoStatus") {
     return `<span class="status-pill ${getGovernanceStatusClass(value)}">${escapeHtml(value)}</span>`;
   }
   return escapeHtml(value);
 }
 
+function renderGovernanceInlineDatalists() {
+  const settings = governanceState.data.settings;
+  const persons = [...new Set(governanceState.data.hazards.map((item) => item.responsiblePerson).filter(Boolean))];
+  return `
+    <datalist id="govResponsibleDeptOptions">${settings.responsibleDepts.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("")}</datalist>
+    <datalist id="govResponsiblePersonOptions">${persons.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("")}</datalist>
+    <datalist id="govSupervisionLeaderOptions">${settings.supervisionLeaders.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("")}</datalist>
+    <datalist id="govAcceptorOptions">${settings.acceptors.map((name) => `<option value="${escapeAttr(name)}"></option>`).join("")}</datalist>
+  `;
+}
+
+function renderGovernanceLedgerInlineControl(fieldKey, hazard, value) {
+  const base = `data-hazard-id="${escapeAttr(hazard.id)}"`;
+  const settings = governanceState.data.settings;
+  if (fieldKey === "deadline") {
+    return `<input class="input ledger-inline-control ledger-inline-date" type="date" value="${escapeAttr(value || "")}" ${base} data-inline-field="deadline">`;
+  }
+  if (fieldKey === "autoStatus" || fieldKey === "currentStatus") {
+    return `
+      <div class="ledger-status-editor">
+        <select class="select ledger-inline-control ledger-inline-status" ${base} data-inline-field="currentStatus">
+          ${settings.statuses.map((name) => `<option ${hazard.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>
+        <span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus)}</span>
+      </div>
+    `;
+  }
+  if (fieldKey === "platformCloseStatus") {
+    return `<select class="select ledger-inline-control ledger-inline-platform" ${base} data-inline-field="platformCloseStatus">${settings.platformCloseStatuses.map((name) => `<option ${hazard.platformCloseStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>`;
+  }
+  if (fieldKey === "responsibleDept") {
+    return `<input class="input ledger-inline-control" list="govResponsibleDeptOptions" value="${escapeAttr(value || "")}" ${base} data-inline-field="responsibleDept">`;
+  }
+  if (fieldKey === "responsiblePerson") {
+    return `<input class="input ledger-inline-control" list="govResponsiblePersonOptions" value="${escapeAttr(value || "")}" ${base} data-inline-field="responsiblePerson">`;
+  }
+  if (fieldKey === "supervisionLeader") {
+    return `<input class="input ledger-inline-control" list="govSupervisionLeaderOptions" value="${escapeAttr(value || "")}" ${base} data-inline-field="supervisionLeader">`;
+  }
+  if (fieldKey === "acceptor") {
+    return `<input class="input ledger-inline-control" list="govAcceptorOptions" value="${escapeAttr(value || "")}" ${base} data-inline-field="acceptor">`;
+  }
+  if (fieldKey === "handlingMeasures") {
+    return `<textarea class="textarea ledger-inline-control ledger-inline-textarea" ${base} data-inline-field="handlingMeasures">${escapeHtml(value || "")}</textarea>`;
+  }
+  return "";
+}
+
 function bindGovernanceLedgerEvents(content) {
   content.querySelector("#exportFilteredLedgerButton").addEventListener("click", () => exportGovernanceLedger(getFilteredGovernanceHazards(), "隐患台账.xlsx"));
   bindGovernanceLedgerFieldEvents(content);
+  content.querySelectorAll(".ledger-inline-control").forEach((control) => {
+    control.addEventListener("change", () => saveGovernanceLedgerInlineEdit(control));
+    if (control.tagName === "INPUT" || control.tagName === "TEXTAREA") {
+      control.addEventListener("blur", () => saveGovernanceLedgerInlineEdit(control));
+    }
+  });
   content.querySelector("#govLedgerKeyword").addEventListener("input", (event) => {
     governanceState.ledgerKeyword = event.target.value.trim();
     renderGovernanceActiveTab();
@@ -2413,6 +3331,25 @@ function bindGovernanceLedgerEvents(content) {
       }
     });
   });
+}
+
+async function saveGovernanceLedgerInlineEdit(control) {
+  const hazardId = control.dataset.hazardId;
+  const field = control.dataset.inlineField;
+  const hazard = governanceState.data.hazards.find((item) => item.id === hazardId);
+  if (!hazard || !field) return;
+  const value = control.value.trim();
+  if ((hazard[field] || "") === value) return;
+  const updated = {
+    ...hazard,
+    [field]: value,
+    updatedAt: new Date().toISOString()
+  };
+  updated.autoStatus = computeGovernanceAutoStatus(updated);
+  governanceState.data.hazards = governanceState.data.hazards.map((item) => item.id === hazardId ? updated : item);
+  await saveGovernanceData();
+  showToast("已更新");
+  renderGovernanceActiveTab();
 }
 
 function bindGovernanceLedgerFieldEvents(content) {
@@ -2562,31 +3499,33 @@ function renderGovernanceRectificationCard(hazard, index) {
   const settings = governanceState.data.settings;
   return `
     <article class="tool-card glass rectification-ledger-card" data-hazard-id="${escapeAttr(hazard.id)}">
-      <div class="rectification-card-head">
-        <div>
-          <span class="hazard-summary-index">${index + 1}</span>
-          <strong>${escapeHtml(hazard.hazardNo || "未编号")}</strong>
-          <p>${escapeHtml(hazard.problem || "未填写隐患")}</p>
-          <small>${escapeHtml(hazard.checkPlace || "未填写地点")}｜${escapeHtml(hazard.responsibleDept || "未分配")}｜${escapeHtml(hazard.deadline || "未填写期限")}</small>
+      <details class="rectification-collapse">
+        <summary class="rectification-card-head">
+          <div>
+            <span class="hazard-summary-index">${index + 1}</span>
+            <strong>${escapeHtml(hazard.hazardNo || "未编号")}</strong>
+            <p>${escapeHtml(hazard.problem || "未填写隐患")}</p>
+            <small>${escapeHtml(hazard.checkPlace || "未填写地点")}｜${escapeHtml(hazard.responsibleDept || "未分配")}｜${escapeHtml(hazard.deadline || "未填写期限")}</small>
+          </div>
+          <span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus)}</span>
+        </summary>
+        <div class="governance-detail-grid rectification-editor-grid">
+          <label class="field"><span>整改状态</span><select class="select rect-current-status">${settings.statuses.map((name) => `<option ${hazard.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
+          <label class="field"><span>平台闭环</span><select class="select rect-platform-status">${settings.platformCloseStatuses.map((name) => `<option ${hazard.platformCloseStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
+          <label class="field"><span>验收人</span><input class="input rect-acceptor" value="${escapeAttr(hazard.acceptor || "")}"></label>
+          <label class="field"><span>延期后期限</span><input class="input rect-extension-deadline" type="date" value="${escapeAttr(hazard.extensionDeadline || "")}"></label>
+          <label class="field span-2"><span>处理措施 / 完成情况</span><textarea class="textarea small-textarea rect-handling">${escapeHtml(hazard.handlingMeasures || "")}</textarea></label>
+          <label class="field span-2"><span>延期原因</span><input class="input rect-extension-reason" value="${escapeAttr(hazard.extensionReason || "")}"></label>
+          <label class="field span-2"><span>整改后照片</span><input class="input rect-after-photos" type="file" accept="image/*" multiple></label>
         </div>
-        <span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus)}</span>
-      </div>
-      <div class="governance-detail-grid rectification-editor-grid">
-        <label class="field"><span>整改状态</span><select class="select rect-current-status">${settings.statuses.map((name) => `<option ${hazard.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
-        <label class="field"><span>平台闭环</span><select class="select rect-platform-status">${settings.platformCloseStatuses.map((name) => `<option ${hazard.platformCloseStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
-        <label class="field"><span>验收人</span><input class="input rect-acceptor" value="${escapeAttr(hazard.acceptor || "")}"></label>
-        <label class="field"><span>延期后期限</span><input class="input rect-extension-deadline" type="date" value="${escapeAttr(hazard.extensionDeadline || "")}"></label>
-        <label class="field span-2"><span>处理措施 / 完成情况</span><textarea class="textarea small-textarea rect-handling">${escapeHtml(hazard.handlingMeasures || "")}</textarea></label>
-        <label class="field span-2"><span>延期原因</span><input class="input rect-extension-reason" value="${escapeAttr(hazard.extensionReason || "")}"></label>
-        <label class="field span-2"><span>整改后照片</span><input class="input rect-after-photos" type="file" accept="image/*" multiple></label>
-      </div>
-      <div class="photo-strip">
-        ${(hazard.afterPhotos || []).slice(0, 4).map((photo) => `<img src="${escapeAttr(photo.dataUrl || photo.watermarkedDataUrl || "")}" alt="整改后照片">`).join("") || `<span class="hint">暂无整改后照片</span>`}
-      </div>
-      <div class="actions">
-        <button class="button primary" type="button" data-action="save-rectification">保存整改</button>
-        <button class="button" type="button" data-action="edit-hazard">编辑隐患基础信息</button>
-      </div>
+        <div class="photo-strip">
+          ${(hazard.afterPhotos || []).slice(0, 4).map((photo) => `<img src="${escapeAttr(photo.dataUrl || photo.watermarkedDataUrl || "")}" alt="整改后照片">`).join("") || `<span class="hint">暂无整改后照片</span>`}
+        </div>
+        <div class="actions">
+          <button class="button primary" type="button" data-action="save-rectification">保存整改</button>
+          <button class="button" type="button" data-action="edit-hazard">编辑隐患基础信息</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2757,21 +3696,62 @@ function renderGovernanceTaskExportPage(content) {
   const inspections = governanceState.data.inspections;
   const inspection = getSelectedGovernanceInspection();
   const depts = [...new Set(governanceState.data.hazards.filter((item) => !inspection || item.checkNo === inspection.checkNo).map((item) => item.responsibleDept).filter(Boolean))];
+  if (governanceState.taskResponsibleDept && !depts.includes(governanceState.taskResponsibleDept)) {
+    governanceState.taskResponsibleDept = "";
+  }
+  const previewHazards = inspection
+    ? governanceState.data.hazards.filter((hazard) => hazard.checkNo === inspection.checkNo && (!governanceState.taskResponsibleDept || hazard.responsibleDept === governanceState.taskResponsibleDept))
+    : [];
   content.innerHTML = `
-    <section class="tool-card glass">
+    <section class="tool-card glass governance-sticky-panel">
       <div class="section-title"><h2>任务下发</h2><p class="hint">确认治理表和初版报告后，按责任部门导出整改任务 JSON，或配合话术发送给责任部门。</p></div>
       <div class="compact-form">
         <label class="field"><span>检查任务</span><select id="taskInspectionId" class="select">${inspections.map((item) => `<option value="${item.id}" ${item.id === governanceState.selectedInspectionId ? "selected" : ""}>${escapeHtml(item.checkNo)} ${escapeHtml(item.checkName)}</option>`).join("")}</select></label>
-        <label class="field"><span>责任部门</span><select id="taskResponsibleDept" class="select"><option value="">全部责任部门</option>${depts.map((name) => `<option>${escapeHtml(name)}</option>`).join("")}</select></label>
+        <label class="field"><span>责任部门</span><select id="taskResponsibleDept" class="select"><option value="">全部责任部门</option>${depts.map((name) => `<option ${governanceState.taskResponsibleDept === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
         <button id="exportTaskJsonButton" class="button primary" type="button">导出整改任务 JSON</button>
       </div>
+    </section>
+    <section class="tool-card glass">
+      <div class="section-title">
+        <div>
+          <h3>本次下发隐患</h3>
+          <p class="hint">${inspection ? `${escapeHtml(inspection.checkNo)}｜${escapeHtml(governanceState.taskResponsibleDept || "全部责任部门")}｜共 ${previewHazards.length} 条` : "请先选择检查任务"}</p>
+        </div>
+      </div>
+      ${renderGovernanceTaskHazardPreview(previewHazards)}
     </section>
   `;
   content.querySelector("#taskInspectionId").addEventListener("change", (event) => {
     governanceState.selectedInspectionId = event.target.value;
+    governanceState.taskResponsibleDept = "";
+    renderGovernanceActiveTab();
+  });
+  content.querySelector("#taskResponsibleDept").addEventListener("change", (event) => {
+    governanceState.taskResponsibleDept = event.target.value;
     renderGovernanceActiveTab();
   });
   content.querySelector("#exportTaskJsonButton").addEventListener("click", exportGovernanceTaskJson);
+}
+
+function renderGovernanceTaskHazardPreview(hazards) {
+  if (!hazards.length) {
+    return `<div class="empty-state subtle"><h3>暂无可下发隐患</h3><p>可以调整检查任务或责任部门。</p></div>`;
+  }
+  return `
+    <div class="task-hazard-preview">
+      ${hazards.map((hazard, index) => `
+        <article class="task-hazard-item">
+          <span>${index + 1}</span>
+          <div>
+            <strong>${escapeHtml(hazard.hazardNo || "未编号")}</strong>
+            <p>${escapeHtml(hazard.problem || "未填写隐患")}</p>
+            <small>${escapeHtml(hazard.responsibleDept || "未分配部门")}｜${escapeHtml(hazard.responsiblePerson || "未填责任人")}｜${escapeHtml(hazard.deadline || "未填期限")}</small>
+          </div>
+          <em class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus)}</em>
+        </article>
+      `).join("")}
+    </div>
+  `;
 }
 
 function exportGovernanceTaskJson() {
@@ -3189,14 +4169,19 @@ function renderGovernanceReportHazardOverview(hazards) {
 }
 
 async function exportGovernanceTableFromModule() {
-  const task = buildGovernanceReportTask();
-  if (!task) return;
-  reportState.config.inspectionName = task.name;
-  reportState.config.governanceNo = task.checkNo;
-  reportState.config.checkedUnit = task.location;
-  reportState.config.inspectionDateText = formatChineseDate(task.date);
-  reportState.config.participants = task.leader || "";
-  await exportGovernanceTable(task);
+  try {
+    const task = buildGovernanceReportTask();
+    if (!task) return;
+    reportState.config.inspectionName = task.name;
+    reportState.config.governanceNo = task.checkNo;
+    reportState.config.checkedUnit = task.location;
+    reportState.config.inspectionDateText = formatChineseDate(task.date);
+    reportState.config.participants = task.leader || "";
+    await exportGovernanceTable(task);
+  } catch (error) {
+    console.error("治理表导出失败", error);
+    showToast(error.message || "治理表导出失败");
+  }
 }
 
 async function exportGovernanceWordReport(type) {
@@ -3763,6 +4748,8 @@ function buildGovernanceReportTask() {
       responsibleUnit: hazard.responsibleDept,
       responsiblePerson: hazard.responsiblePerson,
       deadline: hazard.deadline,
+      acceptor: hazard.acceptor,
+      handlingMeasures: hazard.handlingMeasures,
       photos: hazard.beforePhotos,
       inspectionInfo: { date: hazard.checkDate, location: hazard.checkPlace, leader: inspection.groupLeader }
     }))
