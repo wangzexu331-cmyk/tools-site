@@ -2562,7 +2562,10 @@ async function renderHazardGovernanceModule() {
             <h2>年度隐患汇总与报告</h2>
             <p class="hint">集中汇总年度检查、维护总台账，生成隐患治理表、检查过程导入表和整改报告。</p>
           </div>
-          <button id="goHazardImportButton" class="button" type="button">进入隐患汇总</button>
+          <div class="actions">
+            <button id="goHazardImportButton" class="button" type="button">进入隐患汇总</button>
+            <button id="goGovernanceBackupButton" class="button" type="button">整体备份/导入</button>
+          </div>
         </div>
         ${renderGovernanceWorkflowBar()}
       </section>
@@ -2589,6 +2592,11 @@ async function renderHazardGovernanceModule() {
   document.querySelector("#goHazardImportButton").addEventListener("click", () => {
     governanceState.activeTab = "hazardEntry";
     governanceState.workflowFocus = "capture";
+    renderHazardGovernanceModule();
+  });
+  document.querySelector("#goGovernanceBackupButton").addEventListener("click", () => {
+    governanceState.activeTab = "backup";
+    governanceState.workflowFocus = "";
     renderHazardGovernanceModule();
   });
   document.querySelectorAll("[data-workflow-tab]").forEach((button) => {
@@ -5526,26 +5534,111 @@ async function saveGovernanceSettingsFromForm(event) {
 }
 
 function renderGovernanceBackupPage(content) {
+  const stats = {
+    inspections: governanceState.data.inspections.length,
+    hazards: governanceState.data.hazards.length,
+    settings: Object.keys(governanceState.data.settings.hazardTypes || {}).length,
+    displayFields: governanceState.ledgerDisplayFields.length,
+    exportFields: governanceState.ledgerExportFields.length
+  };
   content.innerHTML = `
     <section class="tool-card glass">
-      <div class="section-title"><h2>数据备份与恢复</h2><p class="hint">离线电脑和在线版不会自动同步，请用 JSON 文件流转。</p></div>
+      <div class="section-title">
+        <div>
+          <h2>整体数据备份与导入</h2>
+          <p class="hint">用于备份或迁移“年度汇总与报告”的完整治理台账。该操作不影响“检查隐患采集”和“整改反馈采集”的独立数据。</p>
+        </div>
+      </div>
+      <div class="report-summary-strip">
+        <span><b>${stats.inspections}</b> 项检查任务</span>
+        <span><b>${stats.hazards}</b> 条隐患</span>
+        <span><b>${stats.settings}</b> 组问题分类</span>
+        <span><b>${stats.displayFields}</b> 个显示字段</span>
+        <span><b>${stats.exportFields}</b> 个导出字段</span>
+      </div>
+      <div class="report-stage-grid">
+        <article class="report-stage-card">
+          <span>整体导出</span>
+          <h3>导出完整备份 JSON</h3>
+          <p>包含检查任务、隐患总台账、基础设置、台账字段显示配置和 Excel 导出字段配置。</p>
+          <button id="exportGovAllButton" class="button primary" type="button">导出整体数据备份</button>
+        </article>
+        <article class="report-stage-card">
+          <span>整体导入</span>
+          <h3>从备份 JSON 恢复</h3>
+          <p>导入后会覆盖当前年度汇总台账。导入前会显示检查任务和隐患数量，并需要二次确认。</p>
+          <button id="importGovAllButton" class="button" type="button">导入整体数据备份</button>
+        </article>
+        <article class="report-stage-card">
+          <span>单项流转</span>
+          <h3>导入检查数据 JSON</h3>
+          <p>仅用于从检查采集端或外部文件补充单次检查数据。大量汇总建议使用“隐患汇总”页面核对后导入。</p>
+          <button id="importGovInspectionJsonButton" class="button" type="button">导入检查数据 JSON</button>
+        </article>
+      </div>
       <div class="actions">
-        <button id="exportGovAllButton" class="button primary" type="button">导出全量数据备份 JSON</button>
-        <button id="importGovAllButton" class="button" type="button">导入全量数据备份 JSON</button>
-        <button id="importGovInspectionJsonButton" class="button" type="button">导入检查数据 JSON</button>
         <input id="govAllJsonInput" class="hidden" type="file" accept="application/json,.json">
         <input id="govInspectionJsonInput" class="hidden" type="file" accept="application/json,.json">
       </div>
     </section>
   `;
-  content.querySelector("#exportGovAllButton").addEventListener("click", () => {
-    downloadTextFile(`隐患排查治理全量备份-${formatDateForFile(new Date())}.json`, JSON.stringify(governanceState.data, null, 2), "application/json;charset=utf-8");
-    showToast("全量数据已导出");
-  });
+  content.querySelector("#exportGovAllButton").addEventListener("click", exportGovernanceFullBackup);
   content.querySelector("#importGovAllButton").addEventListener("click", () => content.querySelector("#govAllJsonInput").click());
   content.querySelector("#importGovInspectionJsonButton").addEventListener("click", () => content.querySelector("#govInspectionJsonInput").click());
   content.querySelector("#govAllJsonInput").addEventListener("change", importGovernanceFullBackup);
   content.querySelector("#govInspectionJsonInput").addEventListener("change", importGovernanceInspectionJson);
+}
+
+function exportGovernanceFullBackup() {
+  recalculateGovernanceData();
+  const payload = buildGovernanceFullBackupPayload();
+  downloadTextFile(
+    `隐患排查治理整体数据备份-${formatDateForFile(new Date())}.json`,
+    JSON.stringify(payload, null, 2),
+    "application/json;charset=utf-8"
+  );
+  showToast("整体数据备份已导出");
+}
+
+function buildGovernanceFullBackupPayload() {
+  return {
+    schemaVersion: "hazard-governance-full-backup-v1",
+    exportType: "governance-full-backup",
+    exportedAt: new Date().toISOString(),
+    app: "tools-site",
+    data: governanceState.data,
+    preferences: {
+      ledgerDisplayFields: normalizeGovernanceLedgerFieldKeys(governanceState.ledgerDisplayFields, "display"),
+      ledgerExportFields: normalizeGovernanceLedgerFieldKeys(governanceState.ledgerExportFields, "export")
+    }
+  };
+}
+
+function parseGovernanceFullBackupPayload(input) {
+  if (!input || typeof input !== "object") {
+    throw new Error("备份文件内容为空或格式错误");
+  }
+  const isWrappedBackup = input.exportType === "governance-full-backup" || input.schemaVersion === "hazard-governance-full-backup-v1";
+  const sourceData = isWrappedBackup ? input.data : input;
+  if (!sourceData || typeof sourceData !== "object") {
+    throw new Error("未找到治理台账数据");
+  }
+  if (!Array.isArray(sourceData.inspections) || !Array.isArray(sourceData.hazards) || !sourceData.settings) {
+    throw new Error("备份文件缺少检查任务、隐患台账或基础设置");
+  }
+  return {
+    data: normalizeGovernanceData(sourceData),
+    preferences: isWrappedBackup && input.preferences && typeof input.preferences === "object" ? input.preferences : {}
+  };
+}
+
+function applyGovernanceBackupPreferences(preferences = {}) {
+  if (Array.isArray(preferences.ledgerDisplayFields)) {
+    setGovernanceLedgerFields("display", preferences.ledgerDisplayFields);
+  }
+  if (Array.isArray(preferences.ledgerExportFields)) {
+    setGovernanceLedgerFields("export", preferences.ledgerExportFields);
+  }
 }
 
 async function importGovernanceFullBackup(event) {
@@ -5553,14 +5646,23 @@ async function importGovernanceFullBackup(event) {
   event.target.value = "";
   if (!file) return;
   try {
-    const data = normalizeGovernanceData(await readJsonFile(file));
-    if (!window.confirm(`将导入 ${data.inspections.length} 项检查、${data.hazards.length} 条隐患，是否覆盖当前治理台账？`)) return;
-    governanceState.data = data;
+    const parsed = parseGovernanceFullBackupPayload(await readJsonFile(file));
+    const currentText = `当前已有 ${governanceState.data.inspections.length} 项检查、${governanceState.data.hazards.length} 条隐患`;
+    const importText = `备份内包含 ${parsed.data.inspections.length} 项检查、${parsed.data.hazards.length} 条隐患`;
+    if (!window.confirm(`${importText}。\n${currentText}。\n导入将覆盖当前年度汇总与报告数据，是否继续？`)) return;
+    governanceState.data = parsed.data;
+    applyGovernanceBackupPreferences(parsed.preferences);
+    governanceState.selectedInspectionId = parsed.data.inspections[0]?.id || "";
+    governanceState.editingInspectionId = "";
+    governanceState.editingHazardId = "";
+    governanceState.feedbackImportDraft = null;
+    governanceState.hazardImportDraft = null;
     await saveGovernanceData();
-    showToast("全量数据已恢复");
+    showToast("整体数据已导入");
     renderHazardGovernanceModule();
   } catch (error) {
-    showToast("导入失败，请检查文件格式");
+    console.error("整体数据导入失败", error);
+    showToast(error.message || "导入失败，请检查文件格式");
   }
 }
 
