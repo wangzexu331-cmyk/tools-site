@@ -1435,7 +1435,11 @@ const REPORT_DOC = {
   titleSize: 44,
   bodySize: 32,
   captionSize: 28,
-  firstLineIndent: 640
+  bodyFirstLineIndent: 883,
+  hazardFirstLineIndent: 643,
+  photoTableWidth: 8364,
+  photoTableLeftWidth: 4027,
+  photoTableRightWidth: 4337
 };
 
 function reportRun(d, text, options = {}) {
@@ -1468,7 +1472,7 @@ function reportParagraph(d, children, options = {}) {
   return new d.Paragraph({
     children: paragraphChildren,
     alignment: options.alignment || d.AlignmentType.JUSTIFIED,
-    indent: options.firstLine === false ? undefined : { firstLine: REPORT_DOC.firstLineIndent },
+    indent: options.firstLine === false ? undefined : { firstLine: options.firstLineIndent || REPORT_DOC.bodyFirstLineIndent },
     spacing,
     heading: options.heading,
     outlineLevel: options.outlineLevel,
@@ -1514,7 +1518,8 @@ function reportHazardTitleParagraph(d, text) {
     bold: true,
     color: "000000"
   })], {
-    outlineLevel: 2
+    outlineLevel: 2,
+    firstLineIndent: REPORT_DOC.hazardFirstLineIndent
   });
 }
 
@@ -1522,7 +1527,7 @@ function reportLabeledParagraph(d, label, text) {
   return reportParagraph(d, [
     reportRun(d, label, { font: "仿宋", size: REPORT_DOC.bodySize, bold: true }),
     reportRun(d, text, { font: "仿宋", size: REPORT_DOC.bodySize })
-  ], { outlineLevel: 2 });
+  ]);
 }
 
 function reportSignatureParagraph(d, text, before = 0) {
@@ -2309,8 +2314,8 @@ async function buildPhotoTable(beforePhotos, afterPhotos) {
       cantSplit: true,
       height: { value: 2850, rule: d.HeightRule.ATLEAST },
       children: [
-        buildPhotoCell(d, await buildPhotoParagraph(beforePhotos[index]?.watermarkedDataUrl || beforePhotos[index]?.dataUrl)),
-        buildPhotoCell(d, await buildPhotoParagraph(afterPhotos[index]?.watermarkedDataUrl || afterPhotos[index]?.dataUrl))
+        buildPhotoCell(d, await buildPhotoParagraph(beforePhotos[index]?.watermarkedDataUrl || beforePhotos[index]?.dataUrl), REPORT_DOC.photoTableLeftWidth),
+        buildPhotoCell(d, await buildPhotoParagraph(afterPhotos[index]?.watermarkedDataUrl || afterPhotos[index]?.dataUrl), REPORT_DOC.photoTableRightWidth)
       ]
     }));
   }
@@ -2321,26 +2326,27 @@ async function buildPhotoTable(beforePhotos, afterPhotos) {
         alignment: d.AlignmentType.CENTER,
         firstLine: false,
         singleLine: true
-      })),
+      }), REPORT_DOC.photoTableLeftWidth),
       buildPhotoCell(d, reportParagraph(d, [reportRun(d, "整改后", { font: "仿宋", size: REPORT_DOC.captionSize })], {
         alignment: d.AlignmentType.CENTER,
         firstLine: false,
         singleLine: true
-      }))
+      }), REPORT_DOC.photoTableRightWidth)
     ]
   }));
 
   return new d.Table({
-    width: { size: 100, type: d.WidthType.PERCENTAGE },
+    width: { size: REPORT_DOC.photoTableWidth, type: d.WidthType.DXA },
     layout: d.TableLayoutType.FIXED,
     alignment: d.AlignmentType.CENTER,
+    columnWidths: [REPORT_DOC.photoTableLeftWidth, REPORT_DOC.photoTableRightWidth],
     borders: buildReportTableBorders(d),
     rows
   });
 }
 
 function buildReportTableBorders(d) {
-  const border = { style: d.BorderStyle.SINGLE, size: 4, color: "808080" };
+  const border = { style: d.BorderStyle.SINGLE, size: 4, color: "000000" };
   return {
     top: border,
     bottom: border,
@@ -2351,9 +2357,9 @@ function buildReportTableBorders(d) {
   };
 }
 
-function buildPhotoCell(d, paragraph) {
+function buildPhotoCell(d, paragraph, width = REPORT_DOC.photoTableLeftWidth) {
   return new d.TableCell({
-    width: { size: 50, type: d.WidthType.PERCENTAGE },
+    width: { size: width, type: d.WidthType.DXA },
     verticalAlign: d.VerticalAlign.CENTER,
     margins: { top: 120, bottom: 120, left: 120, right: 120 },
     children: [paragraph]
