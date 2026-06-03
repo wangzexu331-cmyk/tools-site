@@ -7,8 +7,10 @@ const HAZARD_RECORD_KEY = "current";
 const RECTIFICATION_FEEDBACK_KEY = "rectificationFeedback";
 const RECTIFICATION_TASK_DATA_KEY = "rectificationTaskData";
 const GOVERNANCE_RECORD_KEY = "hazardGovernanceSystem";
+const GOVERNANCE_STORAGE_DIR_HANDLE_KEY = "governanceStorageDirectoryHandle";
 const GOVERNANCE_LEDGER_DISPLAY_FIELDS_KEY = "governanceLedgerDisplayFields";
 const GOVERNANCE_LEDGER_EXPORT_FIELDS_KEY = "governanceLedgerExportFields";
+const GOVERNANCE_WORKBENCH_TITLE = "安防环保部隐患排查治理工作台";
 const MAX_PHOTO_WIDTH = 1600;
 const PHOTO_QUALITY = 0.85;
 const HAZARD_STORAGE_WARN_BYTES = 4 * 1024 * 1024;
@@ -66,14 +68,9 @@ const tools = {
     render: renderRectificationFeedbackTool
   },
   hazardGovernance: {
-    title: "年度汇总与报告",
+    title: GOVERNANCE_WORKBENCH_TITLE,
     icon: "治",
     render: renderHazardGovernanceModule
-  },
-  svgToPdf: {
-    title: "SVG 转 PDF",
-    icon: "图",
-    render: renderSvgPdfTool
   },
   future: {
     title: "后续工具预留",
@@ -82,8 +79,19 @@ const tools = {
   }
 };
 
+const standaloneToolAliases = {
+  hazardCheck: "hazardCheck",
+  inspectionCapture: "hazardCheck",
+  checkCapture: "hazardCheck",
+  check: "hazardCheck",
+  rectificationFeedback: "rectificationFeedback",
+  rectification: "rectificationFeedback",
+  feedback: "rectificationFeedback"
+};
+
 const state = {
   currentTool: "hazardGovernance",
+  standaloneTool: "",
   measures: [],
   editingId: null,
   keyword: "",
@@ -197,24 +205,19 @@ const governanceState = {
   ledgerDisplayFields: readStoredGovernanceLedgerFields(GOVERNANCE_LEDGER_DISPLAY_FIELDS_KEY, "display"),
   ledgerExportFields: readStoredGovernanceLedgerFields(GOVERNANCE_LEDGER_EXPORT_FIELDS_KEY, "export"),
   taskResponsibleDept: "",
-  ledgerFilters: {
-    checkTypeCode: "",
-    checkNo: "",
-    responsibleDept: "",
-    currentStatus: "",
-    autoStatus: "",
-    platformCloseStatus: "",
-    hazardLevel: "",
-    hazardType: "",
-    professionalType: ""
-  },
+  ledgerFilters: createEmptyGovernanceLedgerFilters(),
   feedbackImportDraft: null,
   hazardImportDraft: null,
   hazardEntryMode: "inspectionJson",
-  draggingJsonSourceId: ""
+  draggingJsonSourceId: "",
+  dashboardMetric: "",
+  storageDirectoryHandle: null,
+  storageDirectoryName: "",
+  storageSyncStatus: ""
 };
 
 const app = document.querySelector("#app");
+const shell = document.querySelector(".app-shell");
 const nav = document.querySelector("#toolNav");
 const mobileSelect = document.querySelector("#mobileToolSelect");
 const mobileTitle = document.querySelector("#mobileTitle");
@@ -245,9 +248,47 @@ if (document.readyState === "loading") {
 }
 
 function init() {
+  const startupTool = getStartupToolFromUrl();
+  if (startupTool.tool) {
+    state.currentTool = startupTool.tool;
+  }
+  state.standaloneTool = startupTool.standalone ? startupTool.tool : "";
+  applyStandaloneMode();
   state.measures = loadMeasures();
   renderNavigation();
   renderCurrentTool();
+}
+
+function getStartupToolFromUrl() {
+  const params = new URLSearchParams(window.location.search || "");
+  const standaloneValue = params.get("standalone") || params.get("single") || "";
+  const toolValue = params.get("tool") || "";
+  const hashValue = (window.location.hash || "").replace(/^#\/?/, "");
+  const standaloneTool = resolveToolAlias(standaloneValue);
+  if (standaloneTool) {
+    return { tool: standaloneTool, standalone: true };
+  }
+  if (params.has("standalone") && !standaloneValue) {
+    const tool = resolveToolAlias(toolValue) || resolveToolAlias(hashValue);
+    if (tool) return { tool, standalone: true };
+  }
+  const normalTool = resolveToolAlias(toolValue) || resolveToolAlias(hashValue);
+  return { tool: normalTool || "", standalone: false };
+}
+
+function resolveToolAlias(value) {
+  const key = String(value || "").trim();
+  if (!key) return "";
+  return standaloneToolAliases[key] || (tools[key] ? key : "");
+}
+
+function applyStandaloneMode() {
+  const isStandalone = Boolean(state.standaloneTool);
+  document.body.classList.toggle("standalone-mode", isStandalone);
+  shell?.classList.toggle("standalone-shell", isStandalone);
+  if (isStandalone && tools[state.standaloneTool]) {
+    document.title = `${tools[state.standaloneTool].title} - 个人工具箱`;
+  }
 }
 
 function renderNavigation() {
@@ -270,6 +311,7 @@ function renderNavigation() {
 }
 
 function switchTool(toolKey) {
+  if (state.standaloneTool) return;
   state.currentTool = toolKey;
   state.editingId = null;
   state.keyword = "";
@@ -1437,6 +1479,7 @@ const REPORT_DOC = {
   captionSize: 28,
   bodyFirstLineIndent: 883,
   hazardFirstLineIndent: 643,
+  signatureRightIndent: 1280,
   photoTableWidth: 8364,
   photoTableLeftWidth: 4027,
   photoTableRightWidth: 4337
@@ -1469,10 +1512,18 @@ function reportParagraph(d, children, options = {}) {
         before: options.before || 0,
         after: options.after || 0
       };
+  const indent = options.indent
+    || (options.firstLine === false
+      ? (options.rightIndent ? { right: options.rightIndent } : undefined)
+      : {
+          firstLine: options.firstLineIndent || REPORT_DOC.bodyFirstLineIndent,
+          ...(options.rightIndent ? { right: options.rightIndent } : {})
+        });
   return new d.Paragraph({
+    style: options.style,
     children: paragraphChildren,
     alignment: options.alignment || d.AlignmentType.JUSTIFIED,
-    indent: options.firstLine === false ? undefined : { firstLine: options.firstLineIndent || REPORT_DOC.bodyFirstLineIndent },
+    indent,
     spacing,
     heading: options.heading,
     outlineLevel: options.outlineLevel,
@@ -1480,65 +1531,116 @@ function reportParagraph(d, children, options = {}) {
   });
 }
 
-function reportTitleParagraph(d, title) {
-  return reportParagraph(d, [reportRun(d, title, {
-    font: "方正小标宋简体",
-    size: REPORT_DOC.titleSize,
-    bold: true
-  })], {
+function reportTitleParagraph(d, title, styleId = "") {
+  const titleRun = styleId
+    ? new d.TextRun({ text: title, bold: false })
+    : reportRun(d, title, {
+        font: "方正小标宋简体",
+        size: REPORT_DOC.titleSize,
+        bold: true
+      });
+  return reportParagraph(d, [titleRun], {
+    style: styleId || undefined,
     alignment: d.AlignmentType.CENTER,
     firstLine: false,
     after: 240
   });
 }
 
-function reportRecipientParagraph(d, recipient) {
+function reportBlankParagraph(d) {
+  return new d.Paragraph({
+    children: [new d.TextRun("")],
+    spacing: { before: 0, after: 0, line: 240, lineRule: d.LineRuleType.AUTO }
+  });
+}
+
+function reportRecipientParagraph(d, recipient, styleId = "") {
   const recipientText = String(recipient || "").trim().replace(/[：:]+$/g, "");
-  return reportParagraph(d, [reportRun(d, `${recipientText}：`, {
-    font: "仿宋",
-    size: REPORT_DOC.bodySize
-  })], {
+  const run = styleId
+    ? new d.TextRun({ text: `${recipientText}：` })
+    : reportRun(d, `${recipientText}：`, {
+        font: "仿宋",
+        size: REPORT_DOC.bodySize
+      });
+  return reportParagraph(d, [run], {
+    style: styleId || undefined,
     alignment: d.AlignmentType.LEFT,
     firstLine: false
   });
 }
 
-function reportLevelOneParagraph(d, text) {
-  return reportParagraph(d, [reportRun(d, text, {
-    font: "黑体",
-    size: REPORT_DOC.bodySize,
-    bold: true
-  })]);
+function reportLevelOneParagraph(d, text, styleId = "") {
+  const levelOneRun = styleId
+    ? new d.TextRun({ text })
+    : reportRun(d, text, {
+        font: "黑体",
+        size: REPORT_DOC.bodySize,
+        bold: true
+      });
+  return reportParagraph(d, [levelOneRun], {
+    style: styleId || undefined
+  });
 }
 
-function reportHazardTitleParagraph(d, text) {
-  return reportParagraph(d, [reportRun(d, text, {
-    font: "楷体",
-    size: REPORT_DOC.bodySize,
-    bold: true,
-    color: "000000"
-  })], {
+function reportHazardTitleParagraph(d, text, styleId = "") {
+  const run = styleId
+    ? new d.TextRun({ text, color: "000000" })
+    : reportRun(d, text, {
+        font: "楷体",
+        size: REPORT_DOC.bodySize,
+        bold: true,
+        color: "000000"
+      });
+  return reportParagraph(d, [run], {
+    style: styleId || undefined,
     outlineLevel: 2,
     firstLineIndent: REPORT_DOC.hazardFirstLineIndent
   });
 }
 
-function reportLabeledParagraph(d, label, text) {
-  return reportParagraph(d, [
-    reportRun(d, label, { font: "仿宋", size: REPORT_DOC.bodySize, bold: true }),
-    reportRun(d, text, { font: "仿宋", size: REPORT_DOC.bodySize })
-  ]);
+function reportLabeledParagraph(d, label, text, styleId = "") {
+  const labelRun = styleId
+    ? new d.TextRun({ text: label, bold: true })
+    : reportRun(d, label, { font: "仿宋", size: REPORT_DOC.bodySize, bold: true });
+  const textRun = styleId
+    ? new d.TextRun({ text })
+    : reportRun(d, text, { font: "仿宋", size: REPORT_DOC.bodySize });
+  return reportParagraph(d, [labelRun, textRun], {
+    style: styleId || undefined
+  });
 }
 
-function reportSignatureParagraph(d, text, before = 0) {
-  return reportParagraph(d, [reportRun(d, text, {
-    font: "仿宋",
-    size: REPORT_DOC.bodySize
-  })], {
+function reportSignatureParagraph(d, text, before = 0, styleId = "") {
+  const run = styleId
+    ? new d.TextRun({ text })
+    : reportRun(d, text, {
+        font: "仿宋",
+        size: REPORT_DOC.bodySize
+      });
+  return reportParagraph(d, [run], {
+    style: styleId || undefined,
     alignment: d.AlignmentType.RIGHT,
     firstLine: false,
-    before
+    before,
+    rightIndent: REPORT_DOC.signatureRightIndent
   });
+}
+
+function centerSignatureDateText(dateText, anchorText) {
+  const date = String(dateText || "").trim();
+  const anchorLength = countSignatureDisplayChars(anchorText);
+  const dateLength = countSignatureDisplayChars(date);
+  const padding = Math.max(0, anchorLength - dateLength);
+  if (!padding) return date;
+  const left = Math.floor(padding / 2);
+  const right = Math.ceil(padding / 2);
+  return `${"　".repeat(left)}${date}${"　".repeat(right)}`;
+}
+
+function countSignatureDisplayChars(text) {
+  return Array.from(String(text || "").trim()).reduce((total, char) => {
+    return total + (/[\u0000-\u00ff]/.test(char) ? 0.5 : 1);
+  }, 0);
 }
 
 function reportLineBorder(d) {
@@ -1632,6 +1734,228 @@ function buildReportDocument(d, children, options = {}) {
       children
     }]
   });
+}
+
+async function loadReportTemplateContext(templateName) {
+  if (!window.JSZip) {
+    throw new Error("当前环境缺少 Word 模板处理组件");
+  }
+  const response = await fetch(`templates/${templateName}`);
+  if (!response.ok) {
+    throw new Error(`未找到整改报告模板：${templateName}`);
+  }
+  const buffer = await response.arrayBuffer();
+  let zip;
+  try {
+    zip = await window.JSZip.loadAsync(buffer);
+  } catch (error) {
+    throw new Error(`整改报告模板 ${templateName} 不是可写入的 docx 模板，请先另存为 .docx`);
+  }
+  const stylesXml = zip.file("word/styles.xml")
+    ? await zip.file("word/styles.xml").async("string")
+    : "";
+  return {
+    zip,
+    titleStyleId: findWordStyleIdByName(stylesXml, "A公文标题") || "A公文标题",
+    levelOneStyleId: findWordStyleIdByName(stylesXml, "A一级标题") || "A一级标题",
+    bodyStyleId: findWordStyleIdByName(stylesXml, "A公文正文") || "A公文正文"
+  };
+}
+
+function findWordStyleIdByName(stylesXml, styleName) {
+  if (!stylesXml || !styleName) return "";
+  const escapedName = escapeRegExp(styleName);
+  const styleRegex = /<w:style\b[\s\S]*?<\/w:style>/g;
+  let match;
+  while ((match = styleRegex.exec(stylesXml))) {
+    const block = match[0];
+    if (!new RegExp(`<w:name\\s+[^>]*w:val="${escapedName}"`, "i").test(block)) continue;
+    const idMatch = block.match(/w:styleId="([^"]+)"/i);
+    return idMatch ? decodeXmlAttribute(idMatch[1]) : "";
+  }
+  return "";
+}
+
+async function buildTemplateWordReportBlob(d, templateContext, children) {
+  const generated = await buildGeneratedWordBodyPackage(d, children);
+  const merged = await mergeGeneratedWordAssets(templateContext.zip, generated.zip, generated.bodyContent);
+  const templateDocumentFile = templateContext.zip.file("word/document.xml");
+  if (!templateDocumentFile) {
+    throw new Error("模板缺少 word/document.xml，无法生成整改报告");
+  }
+  const templateDocumentXml = await templateDocumentFile.async("string");
+  templateContext.zip.file("word/document.xml", replaceWordBodyContent(templateDocumentXml, merged.bodyContent));
+  return templateContext.zip.generateAsync({
+    type: "blob",
+    compression: "DEFLATE",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  });
+}
+
+async function buildGeneratedWordBodyPackage(d, children) {
+  const doc = new d.Document({
+    features: { updateFields: true },
+    sections: [{ children }]
+  });
+  const blob = await d.Packer.toBlob(doc);
+  const zip = await window.JSZip.loadAsync(await blob.arrayBuffer());
+  const documentFile = zip.file("word/document.xml");
+  if (!documentFile) {
+    throw new Error("整改报告正文生成失败");
+  }
+  const documentXml = await documentFile.async("string");
+  return {
+    zip,
+    bodyContent: extractWordBodyContent(documentXml)
+  };
+}
+
+function extractWordBodyContent(documentXml) {
+  const bodyOpenMatch = documentXml.match(/<w:body[^>]*>/i);
+  const bodyEndIndex = documentXml.lastIndexOf("</w:body>");
+  if (!bodyOpenMatch || bodyEndIndex < 0) {
+    throw new Error("整改报告正文结构异常");
+  }
+  const bodyStartIndex = (bodyOpenMatch.index || 0) + bodyOpenMatch[0].length;
+  const sectPrIndex = documentXml.lastIndexOf("<w:sectPr");
+  const contentEndIndex = sectPrIndex > bodyStartIndex ? sectPrIndex : bodyEndIndex;
+  return documentXml.slice(bodyStartIndex, contentEndIndex);
+}
+
+function replaceWordBodyContent(templateDocumentXml, bodyContent) {
+  const bodyOpenMatch = templateDocumentXml.match(/<w:body[^>]*>/i);
+  const bodyEndIndex = templateDocumentXml.lastIndexOf("</w:body>");
+  if (!bodyOpenMatch || bodyEndIndex < 0) {
+    throw new Error("模板正文结构异常");
+  }
+  const bodyStartIndex = (bodyOpenMatch.index || 0) + bodyOpenMatch[0].length;
+  const sectPrIndex = templateDocumentXml.lastIndexOf("<w:sectPr");
+  const keepFromIndex = sectPrIndex > bodyStartIndex ? sectPrIndex : bodyEndIndex;
+  return `${templateDocumentXml.slice(0, bodyStartIndex)}${bodyContent}${templateDocumentXml.slice(keepFromIndex)}`;
+}
+
+async function mergeGeneratedWordAssets(templateZip, generatedZip, bodyContent) {
+  const bodyRelationshipsXml = generatedZip.file("word/_rels/document.xml.rels")
+    ? await generatedZip.file("word/_rels/document.xml.rels").async("string")
+    : "";
+  const imageRelationships = parseWordRelationships(bodyRelationshipsXml)
+    .filter((relationship) => relationship.type.includes("/image") && relationship.target && !relationship.target.startsWith("http"));
+  if (!imageRelationships.length) {
+    return { bodyContent };
+  }
+
+  const templateRelsPath = "word/_rels/document.xml.rels";
+  let templateRelsXml = templateZip.file(templateRelsPath)
+    ? await templateZip.file(templateRelsPath).async("string")
+    : '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  const usedRelationshipIds = new Set(parseWordRelationships(templateRelsXml).map((relationship) => relationship.id));
+  let contentTypesXml = templateZip.file("[Content_Types].xml")
+    ? await templateZip.file("[Content_Types].xml").async("string")
+    : "";
+
+  for (let index = 0; index < imageRelationships.length; index += 1) {
+    const relationship = imageRelationships[index];
+    const normalizedTarget = relationship.target.replace(/^\/?word\//, "");
+    const sourcePath = `word/${normalizedTarget}`;
+    const sourceFile = generatedZip.file(sourcePath);
+    if (!sourceFile) continue;
+    const extension = (normalizedTarget.split(".").pop() || "jpg").toLowerCase();
+    const target = `media/report-${Date.now()}-${index}.${extension}`;
+    templateZip.file(`word/${target}`, await sourceFile.async("uint8array"));
+    const newRelationshipId = nextWordRelationshipId(usedRelationshipIds);
+    usedRelationshipIds.add(newRelationshipId);
+    templateRelsXml = insertWordRelationship(templateRelsXml, {
+      id: newRelationshipId,
+      type: relationship.type,
+      target
+    });
+    bodyContent = bodyContent.split(`r:embed="${relationship.id}"`).join(`r:embed="${newRelationshipId}"`);
+    bodyContent = bodyContent.split(`r:link="${relationship.id}"`).join(`r:link="${newRelationshipId}"`);
+    contentTypesXml = ensureWordImageContentType(contentTypesXml, extension);
+  }
+
+  templateZip.file(templateRelsPath, templateRelsXml);
+  if (contentTypesXml) {
+    templateZip.file("[Content_Types].xml", contentTypesXml);
+  }
+  return { bodyContent };
+}
+
+function parseWordRelationships(relationshipsXml) {
+  const relationships = [];
+  const relationshipRegex = /<Relationship\b([^>]*)\/>/g;
+  let match;
+  while ((match = relationshipRegex.exec(relationshipsXml || ""))) {
+    const attrs = parseXmlAttributes(match[1]);
+    relationships.push({
+      id: attrs.Id || attrs.id || "",
+      type: attrs.Type || attrs.type || "",
+      target: attrs.Target || attrs.target || ""
+    });
+  }
+  return relationships;
+}
+
+function parseXmlAttributes(xml) {
+  const attrs = {};
+  const attrRegex = /([\w:]+)="([^"]*)"/g;
+  let match;
+  while ((match = attrRegex.exec(xml || ""))) {
+    attrs[match[1]] = decodeXmlAttribute(match[2]);
+  }
+  return attrs;
+}
+
+function nextWordRelationshipId(usedIds) {
+  let index = 1;
+  while (usedIds.has(`rId${index}`)) {
+    index += 1;
+  }
+  return `rId${index}`;
+}
+
+function insertWordRelationship(relationshipsXml, relationship) {
+  const xml = `<Relationship Id="${escapeXmlAttribute(relationship.id)}" Type="${escapeXmlAttribute(relationship.type)}" Target="${escapeXmlAttribute(relationship.target)}"/>`;
+  if (relationshipsXml.includes("</Relationships>")) {
+    return relationshipsXml.replace("</Relationships>", `${xml}</Relationships>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${xml}</Relationships>`;
+}
+
+function ensureWordImageContentType(contentTypesXml, extension) {
+  if (!contentTypesXml || !extension || new RegExp(`<Default\\s+[^>]*Extension="${escapeRegExp(extension)}"`, "i").test(contentTypesXml)) {
+    return contentTypesXml;
+  }
+  const mimeTypes = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    bmp: "image/bmp"
+  };
+  const contentType = mimeTypes[extension] || "application/octet-stream";
+  const node = `<Default Extension="${escapeXmlAttribute(extension)}" ContentType="${escapeXmlAttribute(contentType)}"/>`;
+  return contentTypesXml.replace("</Types>", `${node}</Types>`);
+}
+
+function escapeXmlAttribute(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function decodeXmlAttribute(value) {
+  return String(value || "")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderRectificationPanel(task) {
@@ -2555,9 +2879,10 @@ function readJsonFile(file) {
 }
 
 async function renderHazardGovernanceModule() {
-  app.innerHTML = `<section class="tool-card glass"><h2>年度汇总与报告</h2><p class="hint">正在读取治理台账...</p></section>`;
+  app.innerHTML = `<section class="tool-card glass"><h2>${GOVERNANCE_WORKBENCH_TITLE}</h2><p class="hint">正在读取治理台账...</p></section>`;
   governanceState.dataScope = "governance";
   governanceState.data = await loadGovernanceData();
+  await loadGovernanceStorageDirectoryHandle();
 
   app.innerHTML = `
     <div class="tool-layout governance-module">
@@ -2565,8 +2890,8 @@ async function renderHazardGovernanceModule() {
         <div class="section-title">
           <div>
             <span class="eyebrow">离线治理台账</span>
-            <h2>年度隐患汇总与报告</h2>
-            <p class="hint">集中汇总年度检查、维护总台账，生成隐患治理表、检查过程导入表和整改报告。</p>
+            <h2>${GOVERNANCE_WORKBENCH_TITLE}</h2>
+            <p class="hint">围绕“确定检查任务、分组检查采集、隐患汇总确认、责任整改闭环”的完整流程，统一维护台账、治理表、平台导入表和整改报告。</p>
           </div>
           <div class="actions">
             <button id="goHazardImportButton" class="button" type="button">进入隐患汇总</button>
@@ -2574,6 +2899,7 @@ async function renderHazardGovernanceModule() {
           </div>
         </div>
         ${renderGovernanceWorkflowBar()}
+        ${renderGovernanceWorkbenchNotes()}
       </section>
       <nav class="governance-tabs glass" role="tablist" aria-label="隐患排查治理模块切换">
         ${[
@@ -2605,6 +2931,7 @@ async function renderHazardGovernanceModule() {
     governanceState.workflowFocus = "";
     renderHazardGovernanceModule();
   });
+  document.querySelector("#saveGovernanceNotesButton").addEventListener("click", saveGovernanceWorkbenchNotes);
   document.querySelectorAll("[data-workflow-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       governanceState.activeTab = button.dataset.workflowTab;
@@ -2777,13 +3104,14 @@ function exportStandaloneRectificationFeedbackJson() {
 
 function renderGovernanceWorkflowBar() {
   const steps = [
-    ["inspection", "inspection", "1", "确定检查任务", "登记检查、通知文件、检查意见"],
-    ["hazardEntry", "capture", "2", "隐患汇总确认", "导入检查 JSON 或治理表并确认隐患"],
-    ["ledger", "ledger", "3", "隐患总台账", "查看、筛选和核对全部隐患"],
-    ["reports", "materials", "4", "治理表/报告导出", "分配责任并导出正式材料"],
-    ["tasks", "dispatch", "5", "下发整改任务", "按责任部门导出 JSON 或生成话术"],
-    ["feedback", "feedback", "6", "整改汇总核对", "导入反馈、处理冲突后提交台账"],
-    ["reports", "closeout", "7", "生成闭环报告", "终版和补充报告"]
+    ["inspection", "inspection", "1", "确认检查任务", "检查名称、编号、时间范围和文件"],
+    ["hazardEntry", "capture", "2", "分组检查采集", "导入检查 JSON 或单项录入隐患"],
+    ["hazardEntry", "summary", "3", "隐患汇总确认", "核对问题、措施、照片和分类"],
+    ["reports", "materials", "4", "责任确认材料", "分配责任并生成治理表、初版报告"],
+    ["tasks", "dispatch", "5", "下发整改任务", "按责任部门导出任务 JSON 和话术"],
+    ["feedback", "feedback", "6", "汇总整改反馈", "导入反馈 JSON，先核对后提交"],
+    ["ledger", "status", "7", "核对整改状态", "维护延期、逾期、平台闭环状态"],
+    ["reports", "closeout", "8", "生成闭环报告", "终版报告和延期补充报告"]
   ];
   const fallbackKey = {
     inspection: "inspection",
@@ -2808,6 +3136,31 @@ function renderGovernanceWorkflowBar() {
   `;
 }
 
+function renderGovernanceWorkbenchNotes() {
+  const notes = String(governanceState.data?.workNotes || "");
+  const noteStateText = notes.trim() ? "已记录注意事项，点击展开查看或继续补充。" : "点击展开记录本次治理工作需要提醒的事项。";
+  return `
+    <details class="governance-notes glass">
+      <summary>
+        <span>注意事项</span>
+        <small>${escapeHtml(noteStateText)}</small>
+      </summary>
+      <textarea id="governanceWorkbenchNotes" class="textarea small-textarea" placeholder="例如：某责任部门反馈较晚、某项隐患需待备件到货、报告上传平台前需再次核对照片。">${escapeHtml(notes)}</textarea>
+      <div class="actions">
+        <button id="saveGovernanceNotesButton" class="button primary" type="button">保存注意事项</button>
+      </div>
+    </details>
+  `;
+}
+
+async function saveGovernanceWorkbenchNotes() {
+  const input = document.querySelector("#governanceWorkbenchNotes");
+  if (!input || !governanceState.data) return;
+  governanceState.data.workNotes = input.value.trim();
+  await saveGovernanceData();
+  showToast("注意事项已保存");
+}
+
 async function loadGovernanceData() {
   const stored = await readDbRecord(GOVERNANCE_RECORD_KEY).catch(() => null);
   if (stored && stored.schemaVersion === "hazard-governance-v1") {
@@ -2820,6 +3173,7 @@ async function loadGovernanceData() {
 async function saveGovernanceData() {
   recalculateGovernanceData();
   await writeDbRecord(GOVERNANCE_RECORD_KEY, governanceState.data);
+  await writeGovernanceDataToLocalFolder({ silent: true });
 }
 
 async function loadRectificationTaskData() {
@@ -2848,6 +3202,7 @@ function createEmptyGovernanceData() {
     settings: createDefaultGovernanceSettings(),
     inspections: [],
     hazards: [],
+    workNotes: "",
     updatedAt: new Date().toISOString()
   };
 }
@@ -2888,6 +3243,7 @@ function normalizeGovernanceData(data) {
     settings,
     inspections: Array.isArray(data.inspections) ? data.inspections.map(normalizeGovernanceInspection) : [],
     hazards: Array.isArray(data.hazards) ? data.hazards.map(normalizeGovernanceHazard) : [],
+    workNotes: String(data.workNotes || ""),
     updatedAt: data.updatedAt || new Date().toISOString()
   };
 }
@@ -2911,20 +3267,24 @@ function normalizeGovernanceHazardTypeSettings(input, defaults) {
 function normalizeGovernanceInspection(item) {
   const typeCode = item.checkTypeCode || checkTypeCodeFromName(item.checkType) || "NB";
   const typeName = item.checkType || checkTypeNameFromCode(typeCode);
+  const parsedRange = parseGovernanceDateRange(item.checkDateRange || "");
+  const checkDate = item.checkDate || parsedRange.start || getTodayDate();
+  const checkEndDate = item.checkEndDate || parsedRange.end || checkDate;
   const inspection = {
     id: item.id || createId(),
     checkNo: item.checkNo || "",
     checkType: typeName,
     checkTypeCode: typeCode,
     checkName: item.checkName || "",
-    checkDate: item.checkDate || getTodayDate(),
+    checkDate,
+    checkEndDate,
     checkPlace: item.checkPlace || "",
     leadDept: item.leadDept || "",
     isSelfResponsible: Boolean(item.isSelfResponsible),
     groupLeader: item.groupLeader || "",
     noticeFileName: item.noticeFileName || "",
     opinionFileName: item.opinionFileName || "",
-    checkDateRange: item.checkDateRange || "",
+    checkDateRange: item.checkDateRange || buildGovernanceDateRangeValue(checkDate, checkEndDate),
     platformUploaded: item.platformUploaded || "否",
     hazardCount: Number(item.hazardCount || 0),
     folderName: item.folderName || "",
@@ -3023,6 +3383,7 @@ function renderGovernanceDashboard(content) {
   recalculateGovernanceData();
   const hazards = governanceState.data.hazards;
   const stats = getGovernanceStats(hazards);
+  const metricHazards = governanceState.dashboardMetric ? getGovernanceDashboardMetricHazards(governanceState.dashboardMetric) : [];
   content.innerHTML = `
     ${renderGovernanceProcessOverview(stats)}
     <div class="governance-grid">
@@ -3035,6 +3396,7 @@ function renderGovernanceDashboard(content) {
       ${renderGovernanceMetric("平台未上传闭环", stats.notClosed, "notClosed")}
       ${renderGovernanceMetric("检查任务数", governanceState.data.inspections.length, "inspection")}
     </div>
+    ${governanceState.dashboardMetric ? renderGovernanceDashboardMetricPanel(governanceState.dashboardMetric, metricHazards) : ""}
     <div class="governance-two-col">
       <section class="tool-card glass">
         <h3>责任部门未完成隐患</h3>
@@ -3054,7 +3416,15 @@ function renderGovernanceDashboard(content) {
     });
   });
   content.querySelectorAll("[data-metric]").forEach((button) => {
-    button.addEventListener("click", () => openGovernanceLedgerByMetric(button.dataset.metric));
+    button.addEventListener("click", () => {
+      const metric = button.dataset.metric;
+      if (["unfinished", "overdue", "due3", "due7"].includes(metric)) {
+        governanceState.dashboardMetric = governanceState.dashboardMetric === metric ? "" : metric;
+        renderGovernanceActiveTab();
+        return;
+      }
+      openGovernanceLedgerByMetric(metric);
+    });
   });
 }
 
@@ -3066,42 +3436,58 @@ function renderGovernanceProcessOverview(stats) {
     {
       tab: "inspection",
       workflow: "inspection",
-      title: "1. 检查任务与通知",
-      text: "确定检查事项、编号、地点和通知/意见文件，作为后续台账和报告的统一来源。",
+      title: "1. 确认检查任务",
+      text: "先确定检查名称、编号、时间范围、检查地点和通知/意见文件，作为后续汇总和报告的统一来源。",
       meta: `${governanceState.data.inspections.length} 项检查任务`,
       action: "进入检查任务"
     },
     {
       tab: "hazardEntry",
       workflow: "capture",
-      title: "2. 分组采集问题",
-      text: "手机端或电脑端录入隐患，也可以导入分组检查形成的隐患治理表。",
+      title: "2. 分组检查采集",
+      text: "汇总各检查组、各地点形成的检查 JSON 或治理表，也可以临时补录单项隐患。",
       meta: `${stats.total} 条隐患`,
-      action: "录入/导入隐患"
+      action: "进入隐患汇总"
     },
     {
-      tab: "ledger",
-      workflow: "ledger",
-      title: "3. 隐患总台账",
-      text: "集中查看全部隐患，按检查类型、责任部门、状态和到期时间筛选核对。",
+      tab: "hazardEntry",
+      workflow: "summary",
+      title: "3. 核对隐患内容",
+      text: "导入后先核对隐患内容、整改措施、问题分类、专业类型和照片，再合并到正式台账。",
       meta: selected ? `当前：${selected.checkNo}` : "请先选择检查",
-      action: "查看总台账"
+      action: "核对导入数据"
     },
     {
       tab: "reports",
       workflow: "materials",
-      title: "4. 责任分配与初版材料",
-      text: "批量或逐条分配督办领导、责任部门、责任人和整改时限，再生成治理表与初版报告。",
+      title: "4. 责任确认与初版材料",
+      text: "批量或逐条确认督办领导、责任部门、责任人、整改时限，生成治理表、检查过程导入表和初版整改报告。",
       meta: `${stats.unfinished} 项待整改`,
       action: "分配并生成材料"
     },
     {
+      tab: "tasks",
+      workflow: "dispatch",
+      title: "5. 下发整改任务",
+      text: "按责任部门导出整改任务 JSON，生成下发和催办话术，减少重复整理。",
+      meta: `${stats.notClosed} 项平台未闭环`,
+      action: "进入任务下发"
+    },
+    {
       tab: "feedback",
       workflow: "feedback",
-      title: "5. 汇总反馈并闭环",
-      text: "导入责任部门整改反馈，核对延期项和已整改项，再生成终版或补充报告。",
+      title: "6. 汇总反馈并闭环",
+      text: "导入责任部门整改反馈，先核对冲突、延期项和已整改项，再提交更新总台账。",
       meta: `${stats.done} 项已整改，${delayCount} 项延期，${delayClosedCount} 项延期已完成`,
       action: "汇总反馈"
+    },
+    {
+      tab: "reports",
+      workflow: "closeout",
+      title: "7. 生成闭环报告",
+      text: "根据最终整改状态生成终版整改报告；延期隐患完成后再生成补充报告。",
+      meta: `${stats.overdue} 项逾期，${stats.due7} 项7天内到期`,
+      action: "生成报告"
     }
   ];
 
@@ -3110,7 +3496,7 @@ function renderGovernanceProcessOverview(stats) {
       <div class="section-title">
         <div>
           <h2>工作流程总览</h2>
-          <p class="hint">按你实际的管理动作组织：先定任务，再采集确认，随后下发整改，最后汇总闭环。</p>
+          <p class="hint">按隐患排查治理的实际动作组织：先定任务，再采集核对，随后下发整改，最后反馈闭环和报告归档。</p>
         </div>
       </div>
       <div class="workflow-overview-grid">
@@ -3129,10 +3515,121 @@ function renderGovernanceProcessOverview(stats) {
 
 function renderGovernanceMetric(label, value, metric) {
   return `
-    <button class="metric-card glass" type="button" data-metric="${metric}">
+    <button class="metric-card glass ${governanceState.dashboardMetric === metric ? "active" : ""}" type="button" data-metric="${metric}">
       <span>${label}</span>
       <strong>${value}</strong>
     </button>
+  `;
+}
+
+function getGovernanceDashboardMetricLabel(metric) {
+  return {
+    unfinished: "未整改隐患",
+    overdue: "已逾期隐患",
+    due3: "3天内到期隐患",
+    due7: "7天内到期隐患"
+  }[metric] || "隐患清单";
+}
+
+function getGovernanceDashboardMetricHazards(metric) {
+  const hazards = governanceState.data.hazards;
+  if (metric === "unfinished") return hazards.filter((item) => item.autoStatus !== "已整改");
+  if (metric === "overdue") return hazards.filter((item) => item.autoStatus === "已逾期");
+  if (metric === "due3") return hazards.filter((item) => isDueWithinDays(item.deadline, 3) && item.autoStatus !== "已整改");
+  if (metric === "due7") return hazards.filter((item) => isDueWithinDays(item.deadline, 7) && item.autoStatus !== "已整改");
+  return [];
+}
+
+function renderGovernanceDashboardMetricPanel(metric, hazards) {
+  const groups = groupGovernanceHazardsByInspectionForDashboard(hazards);
+  return `
+    <section class="tool-card glass dashboard-metric-panel">
+      <div class="section-title compact-section-title">
+        <div>
+          <h2>${escapeHtml(getGovernanceDashboardMetricLabel(metric))}</h2>
+          <p class="hint">按检查任务导入时间从早到晚展示，共 ${hazards.length} 条。此处只展开清单，不跳转页面。</p>
+        </div>
+      </div>
+      ${groups.length ? groups.map(renderGovernanceDashboardMetricGroup).join("") : `<div class="empty-state soft"><p>暂无对应隐患。</p></div>`}
+    </section>
+  `;
+}
+
+function groupGovernanceHazardsByInspectionForDashboard(hazards) {
+  const inspectionMap = new Map(governanceState.data.inspections.map((inspection) => [inspection.checkNo, inspection]));
+  const groups = new Map();
+  hazards.forEach((hazard) => {
+    const key = hazard.checkNo || "未归属检查";
+    if (!groups.has(key)) {
+      groups.set(key, {
+        inspection: inspectionMap.get(hazard.checkNo) || null,
+        checkNo: key,
+        hazards: []
+      });
+    }
+    groups.get(key).hazards.push(hazard);
+  });
+  return Array.from(groups.values()).sort((a, b) => {
+    const aTime = a.inspection?.createdAt || a.hazards[0]?.createdAt || "";
+    const bTime = b.inspection?.createdAt || b.hazards[0]?.createdAt || "";
+    return String(aTime).localeCompare(String(bTime)) || String(a.checkNo).localeCompare(String(b.checkNo), "zh-Hans-CN");
+  });
+}
+
+function renderGovernanceDashboardMetricGroup(group) {
+  const title = group.inspection
+    ? `${group.inspection.checkNo} ${group.inspection.checkName || "未命名检查"}`
+    : group.checkNo;
+  return `
+    <details class="dashboard-hazard-group" open>
+      <summary>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${group.hazards.length} 条</span>
+      </summary>
+      <div class="governance-table-wrap dashboard-table-wrap">
+        <table class="governance-table dashboard-hazard-table">
+          <colgroup>
+            <col class="dashboard-col-seq">
+            <col class="dashboard-col-no">
+            <col class="dashboard-col-problem">
+            <col class="dashboard-col-dept">
+            <col class="dashboard-col-person">
+            <col class="dashboard-col-deadline">
+            <col class="dashboard-col-status">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>序号</th>
+              <th>隐患编号</th>
+              <th>隐患内容</th>
+              <th>责任部门</th>
+              <th>责任人</th>
+              <th>整改期限</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${group.hazards.map((hazard, index) => `
+              <tr>
+                <td>${index + 1}</td>
+                <td>${escapeHtml(hazard.hazardNo || "")}</td>
+                <td class="dashboard-problem-cell">
+                  <details open>
+                    <summary>${escapeHtml(hazard.problem || "未填写隐患内容")}</summary>
+                    <p><b>整改措施：</b>${escapeHtml(hazard.rectificationMeasures || "未填写")}</p>
+                    <p><b>检查地点：</b>${escapeHtml(hazard.checkPlace || "未填写")}</p>
+                  </details>
+                </td>
+                <td>${escapeHtml(hazard.responsibleDept || "未填写")}</td>
+                <td>${escapeHtml(hazard.responsiblePerson || "未填写")}</td>
+                <td>${escapeHtml(hazard.deadline || "未填写")}</td>
+                <td><span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus || "")}</span></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </details>
   `;
 }
 
@@ -3159,7 +3656,8 @@ function renderGovernanceInspectionPage(content) {
           <label class="field"><span>检查类型</span><select id="govCheckTypeCode" class="select">${governanceState.data.settings.checkTypes.map((type) => `<option value="${type.code}" ${(editing?.checkTypeCode || "NB") === type.code ? "selected" : ""}>${type.name}</option>`).join("")}</select></label>
           <label class="field"><span>检查编号</span><input id="govCheckNo" class="input" value="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-generated="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-original-type="${escapeAttr(editing?.checkTypeCode || "NB")}" data-original-date="${escapeAttr(editing?.checkDate || getTodayDate())}" data-original-no="${escapeAttr(editing?.checkNo || "")}" placeholder="例如：ZHJYAF2026-NB-01"></label>
           <label class="field"><span>检查名称</span><input id="govCheckName" class="input" value="${escapeAttr(editing?.checkName || "")}" placeholder="例如：2026年1月安全环保综合检查"></label>
-          <label class="field"><span>检查日期</span><input id="govCheckDate" class="input" type="date" value="${escapeAttr(editing?.checkDate || getTodayDate())}"></label>
+          <label class="field"><span>检查开始日期</span><input id="govCheckDate" class="input" type="date" value="${escapeAttr(editing?.checkDate || getTodayDate())}"></label>
+          <label class="field"><span>检查结束日期</span><input id="govCheckEndDate" class="input" type="date" value="${escapeAttr(editing?.checkEndDate || editing?.checkDate || getTodayDate())}"></label>
           <label class="field"><span>检查地点</span><input id="govCheckPlace" class="input" value="${escapeAttr(editing?.checkPlace || "")}" placeholder="例如：矿山、水冶厂、机关"></label>
           <label class="field"><span>牵头部门</span><input id="govLeadDept" class="input" value="${escapeAttr(editing?.leadDept || "")}"></label>
           <label class="field"><span>检查组组长</span><input id="govGroupLeader" class="input" value="${escapeAttr(editing?.groupLeader || "")}"></label>
@@ -3226,7 +3724,7 @@ function renderGovernanceInspectionCard(inspection) {
       <div>
         <strong>${escapeHtml(inspection.checkNo)}</strong>
         <p>${escapeHtml(inspection.checkName || "未命名检查")}</p>
-        <small>${escapeHtml(inspection.checkDate)}｜${escapeHtml(inspection.checkPlace || "未填写地点")}｜${inspection.hazardCount || 0} 条隐患</small>
+        <small>${escapeHtml(formatGovernanceInspectionDateRange(inspection))}｜${escapeHtml(inspection.checkPlace || "未填写地点")}｜${inspection.hazardCount || 0} 条隐患</small>
       </div>
       <div class="governance-card-actions">
         <button class="icon-button" type="button" data-action="select-inspection" title="选择">✓</button>
@@ -3267,11 +3765,16 @@ async function saveGovernanceInspectionFromForm(event) {
   event.preventDefault();
   const typeCode = document.querySelector("#govCheckTypeCode").value;
   const checkDate = document.querySelector("#govCheckDate").value || getTodayDate();
+  const checkEndDate = document.querySelector("#govCheckEndDate").value || checkDate;
   const checkNo = document.querySelector("#govCheckNo").value.trim();
   const checkName = document.querySelector("#govCheckName").value.trim();
   const checkPlace = document.querySelector("#govCheckPlace").value.trim();
   if (!checkNo || !checkName || !checkPlace) {
     showToast("请填写检查编号、检查名称和检查地点");
+    return;
+  }
+  if (checkEndDate < checkDate) {
+    showToast("检查结束日期不能早于开始日期");
     return;
   }
   const duplicate = governanceState.data.inspections.find((item) => (
@@ -3291,6 +3794,8 @@ async function saveGovernanceInspectionFromForm(event) {
     checkTypeCode: typeCode,
     checkName,
     checkDate,
+    checkEndDate,
+    checkDateRange: buildGovernanceDateRangeValue(checkDate, checkEndDate),
     checkPlace,
     leadDept: document.querySelector("#govLeadDept").value.trim(),
     isSelfResponsible: document.querySelector("#govIsSelfResponsible").checked,
@@ -3312,7 +3817,6 @@ async function saveGovernanceInspectionFromForm(event) {
       checkNo: inspection.checkNo,
       hazardNo: renameGovernanceHazardNoPrefix(hazard.hazardNo, oldCheckNo, inspection.checkNo),
       checkType: inspection.checkType,
-      checkDate: inspection.checkDate,
       checkPlace: inspection.checkPlace
     } : hazard);
     showToast("检查已更新");
@@ -3675,6 +4179,8 @@ function renderGovernanceFilters({ includeKeyword = true } = {}) {
       ${includeKeyword ? renderGovernanceKeywordInput() : ""}
       <select class="select" data-filter="checkTypeCode"><option value="">全部检查类型</option>${options.checkTypes.map((type) => `<option value="${type.code}" ${governanceState.ledgerFilters.checkTypeCode === type.code ? "selected" : ""}>${type.name}</option>`).join("")}</select>
       <select class="select" data-filter="checkNo"><option value="">全部检查编号</option>${inspectionOptions}</select>
+      <label class="field filter-date-field"><span>检查日期起</span><input class="input" data-filter="checkDateStart" type="date" value="${escapeAttr(governanceState.ledgerFilters.checkDateStart || "")}"></label>
+      <label class="field filter-date-field"><span>检查日期止</span><input class="input" data-filter="checkDateEnd" type="date" value="${escapeAttr(governanceState.ledgerFilters.checkDateEnd || "")}"></label>
       <select class="select" data-filter="responsibleDept"><option value="">全部责任部门</option>${options.responsibleDepts.map((name) => `<option ${governanceState.ledgerFilters.responsibleDept === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="currentStatus"><option value="">全部手动状态</option>${options.statuses.map((name) => `<option ${governanceState.ledgerFilters.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="autoStatus"><option value="">全部自动状态</option>${["整改中", "已整改", "延期整改", "已逾期"].map((name) => `<option ${governanceState.ledgerFilters.autoStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
@@ -5319,39 +5825,62 @@ async function exportGovernanceWordReport(type) {
   }
   const includePhotos = document.querySelector("#govReportPhotos").checked;
   const d = window.docx;
+  if (!d) {
+    showToast("当前环境缺少 Word 导出组件");
+    return;
+  }
   const reportProfile = getGovernanceReportProfile(inspection);
+  let templateContext;
+  try {
+    templateContext = await loadReportTemplateContext(reportProfile.templateName);
+  } catch (error) {
+    console.error("整改报告模板读取失败", error);
+    showToast(error.message || "整改报告模板读取失败");
+    return;
+  }
   const title = document.querySelector("#govReportTitle").value.trim() || getGovernanceDefaultReportTitle(inspection);
   const recipient = document.querySelector("#govRecipient").value.trim() || getGovernanceDefaultReportRecipient(inspection);
   const reportCompany = document.querySelector("#govReportCompany").value.trim() || getGovernanceDefaultReportCompany();
   const reportDepartment = document.querySelector("#govReportDepartment")?.value.trim() || "安防环保部";
   const reportDate = document.querySelector("#govReportDate")?.value.trim() || formatChineseDate(getTodayDate());
-  const children = [reportTitleParagraph(d, title)];
-  if (reportProfile.kind !== "company" && recipient) {
-    children.push(reportRecipientParagraph(d, recipient));
+  const children = [
+    reportTitleParagraph(d, title, templateContext.titleStyleId),
+    reportBlankParagraph(d)
+  ];
+  if (recipient) {
+    children.push(reportRecipientParagraph(d, recipient, templateContext.bodyStyleId));
   }
-  children.push(reportParagraph(d, buildGovernanceReportIntro(inspection, hazards, type, reportProfile)));
-  children.push(reportLevelOneParagraph(d, "一、问题隐患及整治情况"));
+  children.push(reportParagraph(d, buildGovernanceReportIntro(inspection, hazards, type, reportProfile), {
+    style: templateContext.bodyStyleId
+  }));
+  children.push(reportLevelOneParagraph(d, "一、问题隐患及整治情况", templateContext.levelOneStyleId));
   for (let index = 0; index < hazards.length; index += 1) {
     const hazard = hazards[index];
-    children.push(reportHazardTitleParagraph(d, `${index + 1}. ${ensureChinesePeriod(hazard.problem)}`));
-    children.push(reportLabeledParagraph(d, "整改措施：", ensureChinesePeriod(hazard.rectificationMeasures)));
+    children.push(reportHazardTitleParagraph(d, `${index + 1}. ${ensureChinesePeriod(hazard.problem)}`, templateContext.bodyStyleId));
+    children.push(reportLabeledParagraph(d, "整改措施：", ensureChinesePeriod(hazard.rectificationMeasures), templateContext.bodyStyleId));
     const completion = type === "initial"
       ? "已完成整改，已按要求落实整改措施。"
       : buildGovernanceCompletionText(hazard);
-    children.push(reportLabeledParagraph(d, "完成情况：", completion));
+    children.push(reportLabeledParagraph(d, "完成情况：", completion, templateContext.bodyStyleId));
     if (includePhotos && hazard.currentStatus !== "延期整改") {
       const before = hazard.beforePhotoMain ? hazard.beforePhotos.filter((photo) => photo.id === hazard.beforePhotoMain) : hazard.beforePhotos.slice(0, 1);
       const after = type === "initial" ? [] : (hazard.afterPhotoMain ? hazard.afterPhotos.filter((photo) => photo.id === hazard.afterPhotoMain) : hazard.afterPhotos.slice(0, 1));
       children.push(await buildPhotoTable(before, after));
     }
   }
-  children.push(reportSignatureParagraph(d, reportCompany, 360));
+  children.push(reportSignatureParagraph(d, reportCompany, 360, templateContext.bodyStyleId));
   if (reportProfile.kind === "company" && reportDepartment) {
-    children.push(reportSignatureParagraph(d, reportDepartment));
+    children.push(reportSignatureParagraph(d, reportDepartment, 0, templateContext.bodyStyleId));
   }
-  children.push(reportSignatureParagraph(d, reportDate));
-  const doc = buildReportDocument(d, children, { headerCompanyName: reportCompany });
-  const blob = await d.Packer.toBlob(doc);
+  children.push(reportSignatureParagraph(d, centerSignatureDateText(reportDate, reportCompany), 0, templateContext.bodyStyleId));
+  let blob;
+  try {
+    blob = await buildTemplateWordReportBlob(d, templateContext, children);
+  } catch (error) {
+    console.error("整改报告生成失败", error);
+    showToast(error.message || "整改报告生成失败");
+    return;
+  }
   const outputFileName = `${inspection.checkNo}-${safeFilePart(title)}-${reportMeta.suffix}.docx`;
   downloadBlob(outputFileName, blob);
   if (["final", "delayIncluded", "delaySupplement"].includes(type)) {
@@ -5398,7 +5927,7 @@ function getGovernanceReportProfile(inspection) {
     kind: typeCode === "NB" ? "company" : "superior",
     templateName: typeCode === "NB"
       ? "04-company-rectification-report-template.docx"
-      : "03-superior-external-rectification-report-template.doc"
+      : "03-superior-external-rectification-report-template.docx"
   };
 }
 
@@ -5445,7 +5974,7 @@ function buildGovernanceReportIntro(inspection, hazards, type, profile = getGove
 }
 
 function formatInspectionDateRangeForReport(inspection, hazards) {
-  const dates = [inspection?.checkDate, ...hazards.map((hazard) => hazard.checkDate)]
+  const dates = [inspection?.checkDate, inspection?.checkEndDate, ...hazards.map((hazard) => hazard.checkDate)]
     .map((value) => parseAnnualLedgerDateParts(value))
     .filter(Boolean)
     .sort((a, b) => a.raw.localeCompare(b.raw));
@@ -5552,7 +6081,7 @@ function renderGovernanceBackupPage(content) {
       <div class="section-title">
         <div>
           <h2>整体数据备份与导入</h2>
-          <p class="hint">用于备份或迁移“年度汇总与报告”的完整治理台账。该操作不影响“检查隐患采集”和“整改反馈采集”的独立数据。</p>
+          <p class="hint">用于备份或迁移“安防环保部隐患排查治理工作台”的完整治理台账。该操作不影响“检查隐患采集”和“整改反馈采集”的独立数据。</p>
         </div>
       </div>
       <div class="report-summary-strip">
@@ -5562,6 +6091,18 @@ function renderGovernanceBackupPage(content) {
         <span><b>${stats.displayFields}</b> 个显示字段</span>
         <span><b>${stats.exportFields}</b> 个导出字段</span>
       </div>
+      <section class="local-folder-storage-panel">
+        <div>
+          <h3>本地文件夹存储</h3>
+          <p class="hint">选择一个电脑本地文件夹后，工作台数据会在每次保存时同步写入 <b>data/full-backup.json</b>。当前浏览器：${isLocalFolderStorageSupported() ? "支持" : "不支持，请使用 Chrome 或 Edge"}。</p>
+          <p class="hint">当前文件夹：${escapeHtml(governanceState.storageDirectoryName || "未选择")}｜${escapeHtml(governanceState.storageSyncStatus || "尚未启用自动写入")}</p>
+        </div>
+        <div class="actions">
+          <button id="chooseGovStorageFolderButton" class="button primary" type="button">选择本地数据文件夹</button>
+          <button id="saveGovStorageFolderButton" class="button" type="button" ${governanceState.storageDirectoryHandle ? "" : "disabled"}>立即保存到文件夹</button>
+          <button id="forgetGovStorageFolderButton" class="button ghost" type="button" ${governanceState.storageDirectoryHandle ? "" : "disabled"}>取消文件夹授权</button>
+        </div>
+      </section>
       <div class="report-stage-grid">
         <article class="report-stage-card">
           <span>整体导出</span>
@@ -5589,6 +6130,12 @@ function renderGovernanceBackupPage(content) {
     </section>
   `;
   content.querySelector("#exportGovAllButton").addEventListener("click", exportGovernanceFullBackup);
+  content.querySelector("#chooseGovStorageFolderButton").addEventListener("click", chooseGovernanceStorageDirectory);
+  content.querySelector("#saveGovStorageFolderButton").addEventListener("click", async () => {
+    await writeGovernanceDataToLocalFolder({ silent: false });
+    renderGovernanceActiveTab();
+  });
+  content.querySelector("#forgetGovStorageFolderButton").addEventListener("click", forgetGovernanceStorageDirectory);
   content.querySelector("#importGovAllButton").addEventListener("click", () => content.querySelector("#govAllJsonInput").click());
   content.querySelector("#importGovInspectionJsonButton").addEventListener("click", () => content.querySelector("#govInspectionJsonInput").click());
   content.querySelector("#govAllJsonInput").addEventListener("change", importGovernanceFullBackup);
@@ -5618,6 +6165,95 @@ function buildGovernanceFullBackupPayload() {
       ledgerExportFields: normalizeGovernanceLedgerFieldKeys(governanceState.ledgerExportFields, "export")
     }
   };
+}
+
+async function loadGovernanceStorageDirectoryHandle() {
+  if (governanceState.storageDirectoryHandle) {
+    return;
+  }
+  try {
+    const stored = await readDbRecord(GOVERNANCE_STORAGE_DIR_HANDLE_KEY);
+    const handle = stored?.handle || null;
+    if (handle) {
+      governanceState.storageDirectoryHandle = handle;
+      governanceState.storageDirectoryName = stored.name || handle.name || "已选择文件夹";
+      governanceState.storageSyncStatus = "已读取本地文件夹授权记录";
+    }
+  } catch (error) {
+    governanceState.storageSyncStatus = "本地文件夹授权记录读取失败";
+  }
+}
+
+function isLocalFolderStorageSupported() {
+  return typeof window.showDirectoryPicker === "function";
+}
+
+async function chooseGovernanceStorageDirectory() {
+  if (!isLocalFolderStorageSupported()) {
+    showToast("当前浏览器不支持本地文件夹存储，请使用新版 Chrome 或 Edge");
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    const permission = await handle.requestPermission({ mode: "readwrite" });
+    if (permission !== "granted") {
+      showToast("未获得文件夹写入权限");
+      return;
+    }
+    governanceState.storageDirectoryHandle = handle;
+    governanceState.storageDirectoryName = handle.name || "本地数据文件夹";
+    governanceState.storageSyncStatus = "已授权，正在写入当前台账...";
+    await writeDbRecord(GOVERNANCE_STORAGE_DIR_HANDLE_KEY, {
+      handle,
+      name: governanceState.storageDirectoryName,
+      updatedAt: new Date().toISOString()
+    });
+    await writeGovernanceDataToLocalFolder({ silent: false });
+    renderGovernanceActiveTab();
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      governanceState.storageSyncStatus = "本地文件夹授权失败";
+      showToast("本地文件夹授权失败");
+    }
+  }
+}
+
+async function forgetGovernanceStorageDirectory() {
+  governanceState.storageDirectoryHandle = null;
+  governanceState.storageDirectoryName = "";
+  governanceState.storageSyncStatus = "";
+  await deleteDbRecord(GOVERNANCE_STORAGE_DIR_HANDLE_KEY).catch(() => {});
+  showToast("已取消本地文件夹自动保存");
+  renderGovernanceActiveTab();
+}
+
+async function writeGovernanceDataToLocalFolder({ silent = true } = {}) {
+  const handle = governanceState.storageDirectoryHandle;
+  if (!handle) {
+    return false;
+  }
+  try {
+    const permission = typeof handle.queryPermission === "function"
+      ? await handle.queryPermission({ mode: "readwrite" })
+      : "granted";
+    if (permission !== "granted") {
+      governanceState.storageSyncStatus = "文件夹需要重新授权";
+      if (!silent) showToast("文件夹需要重新授权后才能写入");
+      return false;
+    }
+    const dataDir = await handle.getDirectoryHandle("data", { create: true });
+    const fileHandle = await dataDir.getFileHandle("full-backup.json", { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(JSON.stringify(buildGovernanceFullBackupPayload(), null, 2));
+    await writable.close();
+    governanceState.storageSyncStatus = `已自动保存：${formatDateTime(new Date())}`;
+    if (!silent) showToast("已写入本地文件夹 data/full-backup.json");
+    return true;
+  } catch (error) {
+    governanceState.storageSyncStatus = "本地文件夹写入失败，请重新选择文件夹";
+    if (!silent) showToast("本地文件夹写入失败");
+    return false;
+  }
 }
 
 function parseGovernanceFullBackupPayload(input) {
@@ -5655,7 +6291,7 @@ async function importGovernanceFullBackup(event) {
     const parsed = parseGovernanceFullBackupPayload(await readJsonFile(file));
     const currentText = `当前已有 ${governanceState.data.inspections.length} 项检查、${governanceState.data.hazards.length} 条隐患`;
     const importText = `备份内包含 ${parsed.data.inspections.length} 项检查、${parsed.data.hazards.length} 条隐患`;
-    if (!window.confirm(`${importText}。\n${currentText}。\n导入将覆盖当前年度汇总与报告数据，是否继续？`)) return;
+    if (!window.confirm(`${importText}。\n${currentText}。\n导入将覆盖当前工作台数据，是否继续？`)) return;
     governanceState.data = parsed.data;
     applyGovernanceBackupPreferences(parsed.preferences);
     governanceState.selectedInspectionId = parsed.data.inspections[0]?.id || "";
@@ -6358,6 +6994,22 @@ function parseGovernanceDateInput(value) {
   return "";
 }
 
+function parseGovernanceDateRange(value) {
+  const text = governanceCellToText(value);
+  if (!text) return { start: "", end: "" };
+  const parts = text.split(/\s*(?:至|到|—|–|~|～)\s*/).filter(Boolean);
+  const start = parseGovernanceDateInput(parts[0] || text);
+  const end = parseGovernanceDateInput(parts[1] || "") || start;
+  return { start, end };
+}
+
+function buildGovernanceDateRangeValue(start, end) {
+  const normalizedStart = parseGovernanceDateInput(start) || start || "";
+  const normalizedEnd = parseGovernanceDateInput(end) || end || normalizedStart;
+  if (!normalizedStart) return "";
+  return normalizedEnd && normalizedEnd !== normalizedStart ? `${normalizedStart} 至 ${normalizedEnd}` : normalizedStart;
+}
+
 function buildGovernanceDateString(year, month, day) {
   const y = Number(year);
   const m = Number(month);
@@ -6368,6 +7020,20 @@ function buildGovernanceDateString(year, month, day) {
 
 function formatDateInputFromDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatGovernanceInspectionDateRange(inspection) {
+  const start = parseAnnualLedgerDateParts(inspection?.checkDate);
+  const end = parseAnnualLedgerDateParts(inspection?.checkEndDate || inspection?.checkDate);
+  if (!start) return "";
+  if (!end || start.raw === end.raw) return `${start.year}年${start.month}月${start.day}日`;
+  if (start.year === end.year && start.month === end.month) {
+    return `${start.year}年${start.month}月${start.day}日-${end.day}日`;
+  }
+  if (start.year === end.year) {
+    return `${start.year}年${start.month}月${start.day}日-${end.month}月${end.day}日`;
+  }
+  return `${start.year}年${start.month}月${start.day}日-${end.year}年${end.month}月${end.day}日`;
 }
 
 function isStandardGovernanceCheckNo(value) {
@@ -6465,6 +7131,8 @@ function getFilteredGovernanceHazards() {
     const filters = governanceState.ledgerFilters;
     if (filters.checkTypeCode && checkTypeCodeFromName(hazard.checkType) !== filters.checkTypeCode) return false;
     if (filters.checkNo && hazard.checkNo !== filters.checkNo) return false;
+    if (filters.checkDateStart && String(hazard.checkDate || "") < filters.checkDateStart) return false;
+    if (filters.checkDateEnd && String(hazard.checkDate || "") > filters.checkDateEnd) return false;
     if (filters.responsibleDept && hazard.responsibleDept !== filters.responsibleDept) return false;
     if (filters.currentStatus && hazard.currentStatus !== filters.currentStatus) return false;
     if (filters.autoStatus && hazard.autoStatus !== filters.autoStatus) return false;
@@ -6477,8 +7145,24 @@ function getFilteredGovernanceHazards() {
   });
 }
 
+function createEmptyGovernanceLedgerFilters() {
+  return {
+    checkTypeCode: "",
+    checkNo: "",
+    checkDateStart: "",
+    checkDateEnd: "",
+    responsibleDept: "",
+    currentStatus: "",
+    autoStatus: "",
+    platformCloseStatus: "",
+    hazardLevel: "",
+    hazardType: "",
+    professionalType: ""
+  };
+}
+
 function openGovernanceLedgerByMetric(metric) {
-  governanceState.ledgerFilters = { checkTypeCode: "", checkNo: "", responsibleDept: "", currentStatus: "", autoStatus: "", platformCloseStatus: "", hazardLevel: "", hazardType: "", professionalType: "" };
+  governanceState.ledgerFilters = createEmptyGovernanceLedgerFilters();
   governanceState.ledgerKeyword = "";
   if (metric === "done") governanceState.ledgerFilters.autoStatus = "已整改";
   if (metric === "unfinished") governanceState.ledgerFilters.autoStatus = "整改中";
@@ -6838,7 +7522,7 @@ function formatAnnualLedgerGroupTitle(group) {
 }
 
 function formatAnnualLedgerDateRange(group) {
-  const dates = [group.inspection?.checkDate, ...group.hazards.map((hazard) => hazard.checkDate)]
+  const dates = [group.inspection?.checkDate, group.inspection?.checkEndDate, ...group.hazards.map((hazard) => hazard.checkDate)]
     .map((value) => parseAnnualLedgerDateParts(value))
     .filter(Boolean)
     .sort((a, b) => a.raw.localeCompare(b.raw));
@@ -6944,8 +7628,6 @@ async function renderHazardCheckTool() {
   hazardState.editingId = null;
   hazardState.previewHazardId = null;
   hazardState.mergeDraft = null;
-  const captureHazardTypes = getHazardCaptureTypeSettings();
-  const defaultCaptureHazardType = Object.keys(captureHazardTypes)[0] || "";
 
   app.innerHTML = `
     <div class="tool-layout hazard-tool">
@@ -6953,7 +7635,7 @@ async function renderHazardCheckTool() {
         <div class="section-title">
           <div>
             <h2>检查隐患采集</h2>
-            <p class="hint">先保存检查信息，再快速录入隐患、照片和整改措施。</p>
+            <p class="hint">先保存检查信息，再快速录入隐患，可按需要补充整改措施和照片。</p>
           </div>
         </div>
 
@@ -6981,7 +7663,7 @@ async function renderHazardCheckTool() {
         <div class="section-title">
           <div>
             <h2>隐患录入</h2>
-            <p class="hint">${isInspectionReady() ? "每条隐患必填：问题隐患、整改措施、问题照片。" : "请先保存检查时间、地点和组长。"}</p>
+            <p class="hint">${isInspectionReady() ? "每条隐患只必填：问题隐患。整改措施和问题照片可后续补充。" : "请先保存检查时间、地点和组长。"}</p>
           </div>
           <span id="hazardCodeBadge" class="code-badge">${getCurrentHazardCode()}</span>
         </div>
@@ -6994,7 +7676,7 @@ async function renderHazardCheckTool() {
           <button class="button voice-button" type="button" data-voice-target="hazardProblem">语音输入问题</button>
 
           <label class="field">
-            <span>整改措施</span>
+            <span>整改措施（选填）</span>
             <textarea id="hazardMeasure" class="textarea" placeholder="例如：立即组织人员处理浮石，确认安全后方可作业。"></textarea>
           </label>
           <button class="button voice-button" type="button" data-voice-target="hazardMeasure">语音输入措施</button>
@@ -7004,22 +7686,8 @@ async function renderHazardCheckTool() {
             <input id="hazardFinder" class="input" type="text" placeholder="默认使用检查组组长">
           </label>
 
-          <label class="field">
-            <span>问题分类</span>
-            <select id="hazardType" class="select">
-              ${Object.keys(captureHazardTypes).map((name) => `<option ${name === defaultCaptureHazardType ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
-            </select>
-          </label>
-
-          <label class="field">
-            <span>专业类型</span>
-            <select id="hazardProfessionalType" class="select">
-              ${renderHazardProfessionalOptions(defaultCaptureHazardType)}
-            </select>
-          </label>
-
           <div class="field photo-field">
-            <span>问题照片</span>
+            <span>问题照片（选填）</span>
             <div class="photo-source-actions">
               <button id="hazardCameraButton" class="button primary" type="button">拍照</button>
               <button id="hazardFileButton" class="button" type="button">从手机文件选择</button>
@@ -7061,15 +7729,6 @@ async function renderHazardCheckTool() {
   syncHazardEditorState();
   renderDraftPhotos();
   renderHazardList();
-}
-
-function getHazardCaptureTypeSettings() {
-  return createDefaultGovernanceSettings().hazardTypes;
-}
-
-function renderHazardProfessionalOptions(hazardType, selected = "") {
-  const options = getHazardCaptureTypeSettings()[hazardType] || [];
-  return options.map((name) => `<option ${selected === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
 }
 
 function renderHighRiskTool() {
@@ -7148,9 +7807,6 @@ function bindHazardEvents() {
   document.querySelector("#hazardFileButton").addEventListener("click", () => document.querySelector("#hazardPhotoInput").click());
   document.querySelector("#hazardCameraInput").addEventListener("change", handleHazardPhotoInput);
   document.querySelector("#hazardPhotoInput").addEventListener("change", handleHazardPhotoInput);
-  document.querySelector("#hazardType").addEventListener("change", (event) => {
-    document.querySelector("#hazardProfessionalType").innerHTML = renderHazardProfessionalOptions(event.target.value);
-  });
   document.querySelector("#cancelHazardEditButton").addEventListener("click", cancelHazardEdit);
   document.querySelector("#clearHazardButton").addEventListener("click", clearHazardInspection);
   document.querySelector("#hazardSearchInput").addEventListener("input", (event) => {
@@ -7206,19 +7862,9 @@ async function handleHazardSubmit(event) {
   const measure = document.querySelector("#hazardMeasure").value.trim();
   const leader = hazardState.data.inspectionInfo.leader.trim();
   const finder = document.querySelector("#hazardFinder").value.trim() || leader;
-  const hazardType = document.querySelector("#hazardType").value;
-  const professionalType = document.querySelector("#hazardProfessionalType").value;
 
   if (!problem) {
     showToast("请填写问题隐患");
-    return;
-  }
-  if (!measure) {
-    showToast("请填写整改措施");
-    return;
-  }
-  if (!hazardState.draftPhotos.length) {
-    showToast("请上传或拍摄问题照片");
     return;
   }
 
@@ -7236,8 +7882,8 @@ async function handleHazardSubmit(event) {
     problem,
     measure,
     finder,
-    hazardType,
-    professionalType,
+    hazardType: existing?.hazardType || "",
+    professionalType: existing?.professionalType || "",
     expertName: leader,
     supervisingLeader: existing?.supervisingLeader || "",
     responsibleUnit: existing?.responsibleUnit || "",
@@ -7404,10 +8050,9 @@ function renderHazardList() {
           </div>
           <small>${escapeHtml(item.createTime)}</small>
         </div>
-        <p><b>整改措施：</b>${escapeHtml(item.measure)}</p>
+        <p><b>整改措施：</b>${escapeHtml(item.measure || "暂未填写")}</p>
         <div class="hazard-meta">
           <span>发现人：${escapeHtml(item.finder)}</span>
-          <span>分类：${escapeHtml(item.hazardType || "未分类")} / ${escapeHtml(item.professionalType || "未选择")}</span>
           <span>照片：${item.photos.length}张</span>
         </div>
         <div class="hazard-card-actions">
@@ -7466,8 +8111,6 @@ function editHazard(hazard) {
   document.querySelector("#hazardProblem").value = hazard.problem;
   document.querySelector("#hazardMeasure").value = hazard.measure;
   document.querySelector("#hazardFinder").value = hazard.finder;
-  document.querySelector("#hazardType").value = hazard.hazardType || Object.keys(getHazardCaptureTypeSettings())[0] || "";
-  document.querySelector("#hazardProfessionalType").innerHTML = renderHazardProfessionalOptions(document.querySelector("#hazardType").value, hazard.professionalType || "");
   syncHazardEditorState();
   renderDraftPhotos();
   document.querySelector("#hazardEditorPanel").scrollIntoView({ behavior: "smooth", block: "start" });
