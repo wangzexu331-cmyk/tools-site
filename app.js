@@ -132,7 +132,7 @@ const GOVERNANCE_LEDGER_FIELDS = [
   { key: "supervisionLeader", label: "督办领导", exportDefault: true, value: (hazard) => hazard.supervisionLeader },
   { key: "responsibleDept", label: "责任部门", displayDefault: true, exportDefault: true, value: (hazard) => hazard.responsibleDept, className: "field-responsibleDept" },
   { key: "responsiblePerson", label: "责任人", displayDefault: true, exportDefault: true, value: (hazard) => hazard.responsiblePerson, className: "field-responsiblePerson" },
-  { key: "deadline", label: "整改期限", displayDefault: true, exportDefault: true, value: (hazard) => hazard.deadline, className: "field-deadline" },
+  { key: "deadline", label: "整改期限", displayDefault: true, exportDefault: true, value: (hazard) => getGovernanceDisplayDeadline(hazard), className: "field-deadline" },
   { key: "acceptor", label: "验收人", exportDefault: true, value: (hazard) => hazard.acceptor },
   { key: "handlingMeasures", label: "处理措施", exportDefault: true, value: (hazard) => hazard.handlingMeasures },
   { key: "currentStatus", label: "手动状态", exportDefault: true, value: (hazard) => hazard.currentStatus },
@@ -190,6 +190,19 @@ function getSelectedGovernanceLedgerFields(mode) {
 function getGovernanceLedgerFieldValue(field, hazard, index) {
   const value = typeof field.value === "function" ? field.value(hazard, index) : hazard[field.key];
   return value ?? "";
+}
+
+function isGovernanceExtensionHazard(hazard) {
+  return hazard?.currentStatus === "延期整改" || hazard?.autoStatus === "延期整改";
+}
+
+function getGovernanceDisplayDeadline(hazard) {
+  if (isGovernanceExtensionHazard(hazard)) return hazard?.extensionDeadline || "";
+  return hazard?.deadline || "";
+}
+
+function getGovernanceLedgerDeadlineEditField(hazard) {
+  return isGovernanceExtensionHazard(hazard) ? "extensionDeadline" : "deadline";
 }
 
 const governanceState = {
@@ -1514,7 +1527,10 @@ function reportParagraph(d, children, options = {}) {
       };
   const indent = options.indent
     || (options.firstLine === false
-      ? (options.rightIndent ? { right: options.rightIndent } : undefined)
+      ? {
+          firstLine: 0,
+          ...(options.rightIndent ? { right: options.rightIndent } : {})
+        }
       : {
           firstLine: options.firstLineIndent || REPORT_DOC.bodyFirstLineIndent,
           ...(options.rightIndent ? { right: options.rightIndent } : {})
@@ -1758,6 +1774,7 @@ async function loadReportTemplateContext(templateName) {
     zip,
     titleStyleId: findWordStyleIdByName(stylesXml, "A公文标题") || "A公文标题",
     levelOneStyleId: findWordStyleIdByName(stylesXml, "A一级标题") || "A一级标题",
+    rectificationTitleStyleId: findWordStyleIdByName(stylesXml, "A整改小标题") || "A整改小标题",
     bodyStyleId: findWordStyleIdByName(stylesXml, "A公文正文") || "A公文正文"
   };
 }
@@ -2118,12 +2135,30 @@ async function exportGovernanceTable(task) {
     buildFallbackGovernanceSheet(worksheet);
   }
   fillGovernanceSheet(worksheet, task);
+  clearGovernanceTableFillColors(worksheet);
 
   const buffer = await workbook.xlsx.writeBuffer();
-  downloadBlob(`${formatChineseDate(task.date)}${task.location || ""}检查隐患治理表.xlsx`, new Blob([buffer], {
+  downloadBlob(buildGovernanceTableFileName(task), new Blob([buffer], {
     type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   }));
   showToast(templateLoaded ? "治理表导出成功" : "未找到模板，已导出兜底治理表");
+}
+
+function buildGovernanceTableFileName(task) {
+  const checkNo = safeFilePart(task?.checkNo || "未编号");
+  const inspectionName = safeFilePart(task?.name || "未命名检查");
+  const hazardCount = Array.isArray(task?.hazards) ? task.hazards.length : 0;
+  return `${checkNo}_${inspectionName}隐患治理表（${hazardCount}项）.xlsx`;
+}
+
+function clearGovernanceTableFillColors(worksheet) {
+  const rowCount = Math.max(worksheet.rowCount || 0, worksheet.actualRowCount || 0);
+  const columnCount = Math.max(worksheet.columnCount || 0, worksheet.actualColumnCount || 10);
+  for (let rowNumber = 1; rowNumber <= rowCount; rowNumber += 1) {
+    for (let column = 1; column <= columnCount; column += 1) {
+      worksheet.getCell(rowNumber, column).fill = undefined;
+    }
+  }
 }
 
 async function exportCheckProcessImportTable(task) {
@@ -2908,6 +2943,7 @@ async function renderHazardGovernanceModule() {
           ["inspection", "检查任务"],
           ["hazardEntry", "隐患汇总"],
           ["reports", "治理表/报告导出"],
+          ["processImport", "检查过程导入表"],
           ["tasks", "任务下发"],
           ["feedback", "整改汇总"],
           ["scripts", "任务话术生成"],
@@ -3215,12 +3251,8 @@ function createDefaultGovernanceSettings() {
       { name: "外部检查", code: "WB" }
     ],
     hazardLevels: ["一般隐患", "重大隐患"],
-    hazardTypes: {
-      "人的不安全行为": ["违章指挥", "违规操作", "违规拆除", "违规攀爬", "高处作业", "个人防护", "冒险作业", "状态异常"],
-      "物的不安全状态": ["安全防护", "脚手架", "施工用电", "施工机具", "材料危险摆放", "机械设备", "车辆安全", "消防安全", "危险化学品", "气瓶", "标志标识"],
-      "环境的不安全因素": ["文明施工", "办公场所", "通道", "场地问题", "采光照明", "扬尘通风", "积水湿滑"],
-      "管理上的缺陷": ["资质证照", "机构职责", "制度体系", "教育培训", "安全投入", "应急管理", "职业健康", "环境保护", "记录许可", "交叉作业", "辐射作业"]
-    },
+    hazardTypes: createDefaultGovernanceHazardTypes(),
+    classificationKeywords: createDefaultGovernanceClassificationKeywords(),
     responsibleDepts: ["矿山", "水冶厂", "安防环保部", "机动能源部"],
     supervisionLeaders: ["分管负责人"],
     acceptors: ["安防环保部"],
@@ -3233,10 +3265,12 @@ function createDefaultGovernanceSettings() {
 function normalizeGovernanceData(data) {
   const defaults = createEmptyGovernanceData();
   const incomingSettings = data.settings || {};
+  const hazardTypes = normalizeGovernanceHazardTypeSettings(incomingSettings.hazardTypes, defaults.settings.hazardTypes);
   const settings = {
     ...defaults.settings,
     ...incomingSettings,
-    hazardTypes: normalizeGovernanceHazardTypeSettings(incomingSettings.hazardTypes, defaults.settings.hazardTypes)
+    hazardTypes,
+    classificationKeywords: normalizeGovernanceClassificationKeywordSettings(incomingSettings.classificationKeywords, hazardTypes, defaults.settings.classificationKeywords)
   };
   return {
     schemaVersion: "hazard-governance-v1",
@@ -3261,7 +3295,93 @@ function normalizeGovernanceHazardTypeSettings(input, defaults) {
     const values = Array.isArray(input[key]) ? input[key].filter(Boolean) : splitSettingList(String(input[key] || ""));
     if (key && values.length) output[key] = values;
   });
-  return Object.keys(output).length ? output : defaults;
+  const merged = clonePlainObject(defaults) || {};
+  Object.entries(output).forEach(([key, values]) => {
+    merged[key] = [...new Set([...(merged[key] || []), ...values])];
+  });
+  return Object.keys(merged).length ? merged : defaults;
+}
+
+function createDefaultGovernanceHazardTypes() {
+  const rules = createDefaultGovernanceClassificationKeywords();
+  return Object.fromEntries(Object.entries(rules).map(([hazardType, professionalMap]) => [
+    hazardType,
+    Object.keys(professionalMap)
+  ]));
+}
+
+function createDefaultGovernanceClassificationKeywords() {
+  return parseClassificationKeywordSettings(`
+人的不安全行为/个人防护: 未佩戴,安全帽,手套,防酸服,防酸手套,防酸面罩,防酸头套,劳保鞋,劳动防护品,劳动防护用品,穿戴,脱下,防护用品
+人的不安全行为/违规操作: 挪作他用,随意放置,未关闭,未固定,未上锁,未短接,未按规定区域停放,操作不当,车速过快,未及时清理,违规开关,不便操作
+人的不安全行为/冒险作业: 爬上,硫酸车顶部,打开通风口,临边,踏空,坠落,掉落,人员超过,作业人数,返出炸药,起爆线,冒险
+人的不安全行为/高处作业: 高处作业,高空作业,顶部通道,行人平台,钢直梯,护笼,生命线,防坠器,栏栅门,硫酸车顶部
+人的不安全行为/车辆驾驶: 车速过快,驾驶舱门,摩托车,装载机,铲运机,运矿卡车,洒水车,叉车,硫酸运输车,电动车,防溜车
+人的不安全行为/监护不到位: 监护人员,安全监督人,旁站监督,未进行旁站,全程密切监视,监护许可,监火人,工作负责人,安全监护人,现场监管人员,中途换人
+物的不安全状态/安全防护: 防护栏,护栏,栏杆,防护网,防护罩,护笼,格栅板,盖板,井盖,安全门,车挡,挡鼠板,围挡,警戒线,救生圈,游泳圈,防坠器,生命线,扶手
+物的不安全状态/施工用电: 配电箱,配电柜,开关箱,电缆,电线,电源线,照明线,接地,漏电,触电,插座,插排,变压器,电源开关,漏电保护,套管,裸露,时控开关,验电笔,绝缘胶垫
+物的不安全状态/消防安全: 消防,灭火器,灭火器箱,消火栓,消防栓,消防水带,水龙带,消防水管,消防管路,火灾报警器,烟感,报警器,应急照明,安全出口,消防通道,消防器材,消防应急箱,消防应急用砂,重点防火区
+物的不安全状态/机械设备: 设备,设施,水泵,潜水泵,空压机,爆破片,提升机,绞车,罐笼,摇台,安全门,凿岩台车,铲运机,破碎锤,搅拌机,柴油发电机,液压管路,油管,传感器
+物的不安全状态/提升运输: 提升,提升机,提升系统,提升运输系统,罐笼,绞车,摇台,马头门,安全门,电梯,信号台,信号灯,限载人数,人行天井,矿车,车场
+物的不安全状态/车辆安全: 车辆,小铲车,无轨设备,装载机,洒水车,叉车,硫酸运输车,车轮,三角木,矿车,运矿卡车,车架,反光镜,驾驶舱门
+物的不安全状态/危险化学品: 硫酸,硫酸库,硫酸罐,卸酸,浓硫酸,硫酸泵,硫酸管道,酸液,氯化钡,碳酸钠,PAC,聚铝,化学品,有毒化学品,危化品,MSDS,石灰,片碱,试剂,混储
+物的不安全状态/气瓶: 气瓶,氧气瓶,氮气瓶,乙炔瓶,氩气瓶,气瓶室,压力表,气体泄漏,报警装置,检测周期,二氧化碳,输氧器具,压力表检定
+物的不安全状态/标志标识: 标识,标志,警示牌,警示标识,标识牌,安全标志,安全标识,安全标记,编号,标签,合格标签,检定标签,位置标记,状态标识,中段标识,指示牌,路标,告知牌,风险告知牌
+物的不安全状态/材料堆放: 杂物,垃圾,纸箱,水鞋,材料,物料,备件,工具,木头,铁桶,纸皮,废旧物资,废弃配件,物品摆放,摆放杂乱,堆放,定置,分类分区,工器具
+物的不安全状态/环保设施: 废水,废气,废物,放射性废物,危险废物,尾液池,废水处理,合格液池,应急收集池,清污分流,环保设施,排放口,尾渣,矿井水,污泥,废弃机油,泄露污染,围堰
+环境的不安全因素/通道: 通道,安全通道,消防通道,逃生通道,应急通道,维修通道,人行通道,联络道,第二安全通道,安全出口,出口,堵塞,阻塞,上锁,畅通,楼梯口,人行天井,电梯井
+环境的不安全因素/场地问题: 场地,地面,路面,斜坡道,山坡,山体,滑坡,坍塌,挡墙,泥墙,外墙,瓷砖,墙面,屋檐,砖块,台阶,矿仓,堆场,边坡,坡度
+环境的不安全因素/采场巷道: 巷道,中段,采场,掘进面,主巷,付穿,穿脉,顶板,顶帮,松石,浮石,片帮,冒顶,裂缝,锚网,支护,岩层偏软,敲帮问顶,掌子面
+环境的不安全因素/采光照明: 照明,照明灯,应急照明,行灯,路灯,光带,灯泡,灯光,照明不足,开关,线路照明
+环境的不安全因素/扬尘通风: 通风,局部通风,局部通风机,局扇,风筒,风门,漏风,风路短路,盲巷,排风扇,主风机,回风井,入风井,炮烟,粉尘,积尘,酸雾
+环境的不安全因素/积水湿滑: 积水,湿滑,滴水,渗水,漏水,水流,水沟,排水沟,排水不畅,水漫,淤泥,污泥,堵塞,疏通,沉淀池,水仓,水泵房,地沟,油污
+环境的不安全因素/文明卫生: 卫生,文明生产,文明卫生,6s,脏乱,杂乱,混乱无序,蜘蛛网,杂草,杂草丛生,树枝,落叶,垃圾,积灰,积尘,清洁,清理,办公室,烟头
+环境的不安全因素/防汛排水: 截洪沟,排水沟,水沟,消力池,清污分流,防洪,汛期,雨水,泥沙,淤积,疏通,排水,坝体,尾矿库,尾矿渣库,尾矿坝,矿井水
+环境的不安全因素/尾矿库: 尾矿库,尾矿坝,尾矿渣库,坝面,坝体,筑坝,消力池,截洪沟,清污分流,尾渣,块石,缓冲带,压实,排洪,排水,堆坝
+管理上的缺陷/制度台账: 制度,管理制度,操作规程,流程图,管理规定,责任书,职责,责任制,岗位职责,标准不统一,针对性不强,修订,更新,归档,档案,台账,清单,巡查记录,自查汇总表
+管理上的缺陷/教育培训: 培训,安全教育,培训资料,签到表,培训考试,实操培训,宣贯,交底,技术交底,班前会,应知应会,操作要点,风险识别,风险辨识,考试,视频演示
+管理上的缺陷/记录许可: 记录,检查记录,点检记录,月检记录,检维修记录,运行记录,检测记录,许可,作业票,动火作业,高风险作业,审批表,审批流程,签名,签字,上报,填报,S-ups
+管理上的缺陷/应急管理: 应急,应急预案,预案,演练,应急物资,应急救援,应急药箱,急救箱,AED,自救器,防毒面具,防酸碱服,输氧器具,逃生示意图,逃生路线图,应急疏散图,避灾硐室,应急广播
+管理上的缺陷/职业健康: 职业健康,职业病,职业危害,职业卫生,危害因素,告知牌,公示,噪声,噪音,粉尘,氡,氡子体,电离辐射,高温,检测结果,实测值,咨询电话
+管理上的缺陷/环境保护: 环保,环保风险,安全环保风险,重点环保风险,废水,废气,废物,危险废物,放射性废物,矿井水,尾液,合格液,清污分流,应急收集,排放口,泄漏,尾渣,污染
+管理上的缺陷/有限空间: 有限空间,受限空间,水仓,吸水井,风险告知牌,中毒,窒息,锁闭,作业主体,主要风险,作业风险告知牌,安全警示标识,有限空间台账
+管理上的缺陷/资质证照: 上岗证,合格证,检验合格证,检验报告,CMA章,KA证,安全生产许可证,换证,特种设备,产品合格证,证照,资质,检定,校验,检测周期,合格标签,检验标志
+管理上的缺陷/视频监控: 视频监控,监控记录,视频录像,监控探头,离线视频,视频画面,监控范围,抽检,处理时间,处理结果,视频名称,解说内容,监视,全程密切监视,电子封条
+管理上的缺陷/爆破作业: 爆破,炸药,雷管,装药,炮孔,炮烟,起爆线,爆破设计,爆破警戒,爆破网络,专用车架,爆破作业,炸药库,装药器,通风检测记录
+管理上的缺陷/人员出入: 下井人员,人员出入,入井检身,领导下井,带班,频次,主要负责人,分管领导,安全总监,技术负责,检查确认频次,作业人数,限载人数
+管理上的缺陷/交叉作业: 外来人员,协作单位,项目部,施工单位,施工队伍,施工资料,施工通知单,施工合同,安全生产协议,委托书,归档,退场项目
+  `);
+}
+
+function normalizeGovernanceClassificationKeywordSettings(input, hazardTypes, defaults = createDefaultGovernanceClassificationKeywords()) {
+  const source = typeof input === "string" ? parseClassificationKeywordSettings(input) : input;
+  const output = {};
+  if (source && typeof source === "object") {
+    Object.entries(source).forEach(([hazardType, professionalMap]) => {
+      if (!hazardType || !professionalMap || typeof professionalMap !== "object") return;
+      output[hazardType] = {};
+      Object.entries(professionalMap).forEach(([professionalType, keywords]) => {
+        const list = Array.isArray(keywords) ? keywords : splitSettingList(String(keywords || ""));
+        output[hazardType][professionalType] = [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))];
+      });
+      if (!Object.keys(output[hazardType]).length) delete output[hazardType];
+    });
+  }
+  const merged = clonePlainObject(defaults) || {};
+  Object.entries(output).forEach(([hazardType, professionalMap]) => {
+    if (!merged[hazardType]) merged[hazardType] = {};
+    Object.entries(professionalMap).forEach(([professionalType, keywords]) => {
+      const defaultKeywords = merged[hazardType][professionalType] || [];
+      merged[hazardType][professionalType] = [...new Set([...defaultKeywords, ...keywords])];
+    });
+  });
+  Object.entries(hazardTypes || {}).forEach(([hazardType, professionalTypes]) => {
+    if (!merged[hazardType]) merged[hazardType] = {};
+    (professionalTypes || []).forEach((professionalType) => {
+      if (!merged[hazardType][professionalType]) merged[hazardType][professionalType] = [];
+    });
+  });
+  return merged;
 }
 
 function normalizeGovernanceInspection(item) {
@@ -3328,6 +3448,9 @@ function normalizeGovernanceHazard(item) {
     afterPhotos: normalizeGovernancePhotos(item.afterPhotos || []),
     beforePhotoMain: item.beforePhotoMain || "",
     afterPhotoMain: item.afterPhotoMain || "",
+    classificationSource: item.classificationSource || "",
+    classificationConfidence: Number(item.classificationConfidence || 0),
+    classificationMatchedKeywords: Array.isArray(item.classificationMatchedKeywords) ? item.classificationMatchedKeywords : [],
     feedbackSource: item.feedbackSource || "电脑端录入",
     createdAt: item.createdAt || item.createTime || new Date().toISOString(),
     updatedAt: item.updatedAt || new Date().toISOString()
@@ -3358,6 +3481,7 @@ function renderGovernanceActiveTab() {
     tasks: renderGovernanceTaskExportPage,
     feedback: renderGovernanceFeedbackImportPage,
     reports: renderGovernanceReportPage,
+    processImport: renderGovernanceProcessImportPage,
     scripts: renderGovernanceScriptsPage,
     settings: renderGovernanceSettingsPage,
     backup: renderGovernanceBackupPage
@@ -3461,14 +3585,22 @@ function renderGovernanceProcessOverview(stats) {
       tab: "reports",
       workflow: "materials",
       title: "4. 责任确认与初版材料",
-      text: "批量或逐条确认督办领导、责任部门、责任人、整改时限，生成治理表、检查过程导入表和初版整改报告。",
+      text: "批量或逐条确认督办领导、责任部门、责任人、整改时限，生成治理表和初版整改报告。",
       meta: `${stats.unfinished} 项待整改`,
       action: "分配并生成材料"
     },
     {
+      tab: "processImport",
+      workflow: "platform",
+      title: "5. 平台导入表核对",
+      text: "集中核对问题分类、专业类型、专家姓名和检查日期，必要时用规则词库自动识别后导出检查过程导入表。",
+      meta: `${stats.total} 项待平台录入`,
+      action: "核对平台字段"
+    },
+    {
       tab: "tasks",
       workflow: "dispatch",
-      title: "5. 下发整改任务",
+      title: "6. 下发整改任务",
       text: "按责任部门导出整改任务 JSON，生成下发和催办话术，减少重复整理。",
       meta: `${stats.notClosed} 项平台未闭环`,
       action: "进入任务下发"
@@ -3476,7 +3608,7 @@ function renderGovernanceProcessOverview(stats) {
     {
       tab: "feedback",
       workflow: "feedback",
-      title: "6. 汇总反馈并闭环",
+      title: "7. 汇总反馈并闭环",
       text: "导入责任部门整改反馈，先核对冲突、延期项和已整改项，再提交更新总台账。",
       meta: `${stats.done} 项已整改，${delayCount} 项延期，${delayClosedCount} 项延期已完成`,
       action: "汇总反馈"
@@ -3484,7 +3616,7 @@ function renderGovernanceProcessOverview(stats) {
     {
       tab: "reports",
       workflow: "closeout",
-      title: "7. 生成闭环报告",
+      title: "8. 生成闭环报告",
       text: "根据最终整改状态生成终版整改报告；延期隐患完成后再生成补充报告。",
       meta: `${stats.overdue} 项逾期，${stats.due7} 项7天内到期`,
       action: "生成报告"
@@ -3535,8 +3667,8 @@ function getGovernanceDashboardMetricHazards(metric) {
   const hazards = governanceState.data.hazards;
   if (metric === "unfinished") return hazards.filter((item) => item.autoStatus !== "已整改");
   if (metric === "overdue") return hazards.filter((item) => item.autoStatus === "已逾期");
-  if (metric === "due3") return hazards.filter((item) => isDueWithinDays(item.deadline, 3) && item.autoStatus !== "已整改");
-  if (metric === "due7") return hazards.filter((item) => isDueWithinDays(item.deadline, 7) && item.autoStatus !== "已整改");
+  if (metric === "due3") return hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 3) && item.autoStatus !== "已整改");
+  if (metric === "due7") return hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 7) && item.autoStatus !== "已整改");
   return [];
 }
 
@@ -3622,7 +3754,7 @@ function renderGovernanceDashboardMetricGroup(group) {
                 </td>
                 <td>${escapeHtml(hazard.responsibleDept || "未填写")}</td>
                 <td>${escapeHtml(hazard.responsiblePerson || "未填写")}</td>
-                <td>${escapeHtml(hazard.deadline || "未填写")}</td>
+                <td>${escapeHtml(getGovernanceDisplayDeadline(hazard) || "未填写")}</td>
                 <td><span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus || "")}</span></td>
               </tr>
             `).join("")}
@@ -3656,8 +3788,14 @@ function renderGovernanceInspectionPage(content) {
           <label class="field"><span>检查类型</span><select id="govCheckTypeCode" class="select">${governanceState.data.settings.checkTypes.map((type) => `<option value="${type.code}" ${(editing?.checkTypeCode || "NB") === type.code ? "selected" : ""}>${type.name}</option>`).join("")}</select></label>
           <label class="field"><span>检查编号</span><input id="govCheckNo" class="input" value="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-generated="${escapeAttr(editing?.checkNo || previewNextGovernanceCheckNo())}" data-original-type="${escapeAttr(editing?.checkTypeCode || "NB")}" data-original-date="${escapeAttr(editing?.checkDate || getTodayDate())}" data-original-no="${escapeAttr(editing?.checkNo || "")}" placeholder="例如：ZHJYAF2026-NB-01"></label>
           <label class="field"><span>检查名称</span><input id="govCheckName" class="input" value="${escapeAttr(editing?.checkName || "")}" placeholder="例如：2026年1月安全环保综合检查"></label>
-          <label class="field"><span>检查开始日期</span><input id="govCheckDate" class="input" type="date" value="${escapeAttr(editing?.checkDate || getTodayDate())}"></label>
-          <label class="field"><span>检查结束日期</span><input id="govCheckEndDate" class="input" type="date" value="${escapeAttr(editing?.checkEndDate || editing?.checkDate || getTodayDate())}"></label>
+          ${renderGovernanceDateRangePicker({
+            id: "govInspectionDateRange",
+            label: "检查时间范围",
+            start: editing?.checkDate || getTodayDate(),
+            end: editing?.checkEndDate || editing?.checkDate || getTodayDate(),
+            startInputId: "govCheckDate",
+            endInputId: "govCheckEndDate"
+          })}
           <label class="field"><span>检查地点</span><input id="govCheckPlace" class="input" value="${escapeAttr(editing?.checkPlace || "")}" placeholder="例如：矿山、水冶厂、机关"></label>
           <label class="field"><span>牵头部门</span><input id="govLeadDept" class="input" value="${escapeAttr(editing?.leadDept || "")}"></label>
           <label class="field"><span>检查组组长</span><input id="govGroupLeader" class="input" value="${escapeAttr(editing?.groupLeader || "")}"></label>
@@ -3684,6 +3822,7 @@ function renderGovernanceInspectionPage(content) {
   content.querySelector("#govCheckDate").addEventListener("change", (event) => {
     syncGeneratedGovernanceCheckNo(content.querySelector("#govCheckTypeCode").value, event.target.value);
   });
+  bindGovernanceDateRangePickers(content);
   content.querySelector("#govCheckNo").addEventListener("input", (event) => {
     content.querySelector("#govCheckNoPreview").textContent = event.target.value.trim() || "未填写编号";
   });
@@ -4050,6 +4189,9 @@ function renderGovernanceTablePlanCard(plan, index, draft) {
   const inspection = plan.parsedInspection || {};
   const checkTypeCode = inspection.checkTypeCode || checkTypeCodeFromName(inspection.checkType);
   const platformUploaded = plan.platformUploaded || inspection.platformUploaded || "否";
+  const parsedDateRange = parseGovernanceDateRange(inspection.checkDateRange || "");
+  const planStartDate = inspection.checkDate || parsedDateRange.start || getTodayDate();
+  const planEndDate = inspection.checkEndDate || parsedDateRange.end || planStartDate;
   return `
     <article class="table-plan-card" data-table-plan-id="${escapeAttr(plan.id)}">
       <details ${plan.expanded ? "open" : ""}>
@@ -4068,7 +4210,15 @@ function renderGovernanceTablePlanCard(plan, index, draft) {
         <div class="governance-detail-grid table-plan-edit-grid">
           <label class="field"><span>检查名称</span><input class="input" data-plan-field="checkName" value="${escapeAttr(inspection.checkName || "")}"></label>
           <label class="field"><span>检查类型</span><select class="select" data-plan-field="checkTypeCode">${renderGovernanceCheckTypeOptions(checkTypeCode)}</select></label>
-          <label class="field"><span>检查时间范围</span><input class="input" data-plan-field="checkDateRange" value="${escapeAttr(inspection.checkDateRange || inspection.checkDate || "")}" placeholder="例如：2026-05-01 至 2026-05-03"></label>
+          ${renderGovernanceDateRangePicker({
+            id: `tablePlanDateRange-${plan.id}`,
+            label: "检查时间范围",
+            start: planStartDate,
+            end: planEndDate,
+            rangeInputAttrs: 'data-plan-field="checkDateRange"',
+            startInputAttrs: 'data-plan-field="checkDate"',
+            endInputAttrs: 'data-plan-field="checkEndDate"'
+          })}
           <label class="field"><span>检查编号</span><input class="input" data-plan-field="checkNo" value="${escapeAttr(inspection.checkNo || "")}"></label>
           <label class="field"><span>是否上传平台</span><select class="select" data-plan-field="platformUploaded"><option ${platformUploaded === "否" ? "selected" : ""}>否</option><option ${platformUploaded === "是" ? "selected" : ""}>是</option></select></label>
           <label class="field"><span>覆盖已有检查</span><select class="select" data-plan-overwrite-id ${plan.overwrite ? "" : "disabled"}><option value="">选择要覆盖的检查</option>${renderGovernanceInspectionSelectOptions(plan.overwriteInspectionId || plan.sameInspectionId || "")}</select></label>
@@ -4143,8 +4293,14 @@ function renderGovernanceImportHazardRow(entry, index, showAssignment) {
       </td>
       <td><textarea class="textarea import-cell-text import-problem">${escapeHtml(hazard.problem || "")}</textarea></td>
       <td><textarea class="textarea import-cell-text import-measures">${escapeHtml(hazard.rectificationMeasures || "")}</textarea></td>
-      <td><select class="select import-mini-select import-hazard-type">${renderGovernanceHazardTypeOptions(hazard.hazardType)}</select></td>
-      <td><select class="select import-mini-select import-professional-type">${renderGovernanceProfessionalTypeOptions(hazard.hazardType, hazard.professionalType)}</select></td>
+      <td>
+        <select class="select import-mini-select import-hazard-type">${renderGovernanceHazardTypeOptions(hazard.hazardType)}</select>
+        <button class="text-button import-auto-classify" type="button">识别</button>
+      </td>
+      <td>
+        <select class="select import-mini-select import-professional-type">${renderGovernanceProfessionalTypeOptions(hazard.hazardType, hazard.professionalType)}</select>
+        <small class="import-classification-hint">${hazard.classificationSource ? `${escapeHtml(hazard.classificationConfidence || "")}% ${escapeHtml((hazard.classificationMatchedKeywords || []).slice(0, 2).join("、"))}` : ""}</small>
+      </td>
       ${showAssignment ? `
         <td><input class="input import-mini-input import-supervision-leader" value="${escapeAttr(hazard.supervisionLeader || "")}"></td>
         <td><input class="input import-mini-input import-responsible-dept" value="${escapeAttr(hazard.responsibleDept || "")}"></td>
@@ -4179,8 +4335,17 @@ function renderGovernanceFilters({ includeKeyword = true } = {}) {
       ${includeKeyword ? renderGovernanceKeywordInput() : ""}
       <select class="select" data-filter="checkTypeCode"><option value="">全部检查类型</option>${options.checkTypes.map((type) => `<option value="${type.code}" ${governanceState.ledgerFilters.checkTypeCode === type.code ? "selected" : ""}>${type.name}</option>`).join("")}</select>
       <select class="select" data-filter="checkNo"><option value="">全部检查编号</option>${inspectionOptions}</select>
-      <label class="field filter-date-field"><span>检查日期起</span><input class="input" data-filter="checkDateStart" type="date" value="${escapeAttr(governanceState.ledgerFilters.checkDateStart || "")}"></label>
-      <label class="field filter-date-field"><span>检查日期止</span><input class="input" data-filter="checkDateEnd" type="date" value="${escapeAttr(governanceState.ledgerFilters.checkDateEnd || "")}"></label>
+      ${renderGovernanceDateRangePicker({
+        id: "govLedgerCheckDateRange",
+        label: "检查日期范围",
+        start: governanceState.ledgerFilters.checkDateStart || "",
+        end: governanceState.ledgerFilters.checkDateEnd || governanceState.ledgerFilters.checkDateStart || "",
+        rangeInputAttrs: 'data-filter-date-range="checkDate"',
+        allowEmpty: true,
+        allowClear: true,
+        dispatchMode: "complete",
+        emptyText: "全部检查日期"
+      })}
       <select class="select" data-filter="responsibleDept"><option value="">全部责任部门</option>${options.responsibleDepts.map((name) => `<option ${governanceState.ledgerFilters.responsibleDept === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="currentStatus"><option value="">全部手动状态</option>${options.statuses.map((name) => `<option ${governanceState.ledgerFilters.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="autoStatus"><option value="">全部自动状态</option>${["整改中", "已整改", "延期整改", "已逾期"].map((name) => `<option ${governanceState.ledgerFilters.autoStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
@@ -4255,6 +4420,10 @@ function renderGovernanceHazardForm(inspection) {
       <label class="field"><span>隐患等级</span><select id="govHazardLevel" class="select">${settings.hazardLevels.map((name) => `<option ${editing?.hazardLevel === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
       <label class="field"><span>问题分类</span><select id="govHazardType" class="select">${Object.keys(settings.hazardTypes).map((name) => `<option ${hazardType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
       <label class="field"><span>专业类型</span><select id="govProfessionalType" class="select">${professionalOptions.map((name) => `<option ${editing?.professionalType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
+      <div class="classification-tools span-2">
+        <button id="autoClassifyHazardButton" class="button small-button" type="button">按规则词库识别分类</button>
+        <small id="govClassificationHint">根据问题隐患和整改措施匹配基础设置中的关键词。</small>
+      </div>
       <label class="field"><span>专家姓名</span><input id="govExpertName" class="input" value="${escapeAttr(editing?.expertName || inspection?.groupLeader || "")}" placeholder="默认使用检查组组长"></label>
       <label class="field span-2"><span>问题隐患</span><textarea id="govProblem" class="textarea" placeholder="填写问题隐患">${escapeHtml(editing?.problem || "")}</textarea></label>
       <label class="field span-2"><span>整改措施</span><textarea id="govMeasures" class="textarea" placeholder="填写拟采取的整改措施">${escapeHtml(editing?.rectificationMeasures || "")}</textarea></label>
@@ -4360,7 +4529,10 @@ function renderGovernanceLedgerInlineControl(fieldKey, hazard, value) {
   const base = `data-hazard-id="${escapeAttr(hazard.id)}"`;
   const settings = governanceState.data.settings;
   if (fieldKey === "deadline") {
-    return `<input class="input ledger-inline-control ledger-inline-date" type="date" value="${escapeAttr(value || "")}" ${base} data-inline-field="deadline">`;
+    const editField = getGovernanceLedgerDeadlineEditField(hazard);
+    const editValue = hazard[editField] || "";
+    const title = editField === "extensionDeadline" ? "当前为延期整改，编辑延期后期限" : "编辑整改期限";
+    return `<input class="input ledger-inline-control ledger-inline-date" type="date" value="${escapeAttr(editValue)}" ${base} data-inline-field="${escapeAttr(editField)}" title="${escapeAttr(title)}">`;
   }
   if (fieldKey === "autoStatus" || fieldKey === "currentStatus") {
     return `
@@ -4396,6 +4568,7 @@ function renderGovernanceLedgerInlineControl(fieldKey, hazard, value) {
 function bindGovernanceLedgerEvents(content) {
   content.querySelector("#exportFilteredLedgerButton").addEventListener("click", () => exportGovernanceLedger(getFilteredGovernanceHazards()));
   bindGovernanceLedgerFieldEvents(content);
+  bindGovernanceDateRangePickers(content);
   content.querySelectorAll(".ledger-inline-control").forEach((control) => {
     control.addEventListener("change", () => saveGovernanceLedgerInlineEdit(control));
     if (control.tagName === "INPUT" || control.tagName === "TEXTAREA") {
@@ -4409,6 +4582,14 @@ function bindGovernanceLedgerEvents(content) {
   content.querySelectorAll("[data-filter]").forEach((input) => {
     input.addEventListener("change", () => {
       governanceState.ledgerFilters[input.dataset.filter] = input.value;
+      renderGovernanceActiveTab();
+    });
+  });
+  content.querySelectorAll("[data-filter-date-range]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const picker = input.closest("[data-date-range-picker]");
+      governanceState.ledgerFilters.checkDateStart = picker?.querySelector("[data-range-start]")?.value || "";
+      governanceState.ledgerFilters.checkDateEnd = picker?.querySelector("[data-range-end]")?.value || "";
       renderGovernanceActiveTab();
     });
   });
@@ -4540,7 +4721,18 @@ function bindGovernanceHazardEntryEvents(content) {
         : "未选择检查";
     }
   });
-  content.querySelector("#govHazardType")?.addEventListener("change", () => renderGovernanceActiveTab());
+  content.querySelector("#govHazardType")?.addEventListener("change", (event) => {
+    event.target.dataset.userChanged = "1";
+    const professionalSelect = content.querySelector("#govProfessionalType");
+    if (professionalSelect) {
+      professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(event.target.value);
+      professionalSelect.dataset.userChanged = "1";
+    }
+  });
+  content.querySelector("#govProfessionalType")?.addEventListener("change", (event) => {
+    event.target.dataset.userChanged = "1";
+  });
+  content.querySelector("#autoClassifyHazardButton")?.addEventListener("click", applyGovernanceClassificationToForm);
   content.querySelector("#cancelGovHazardEdit")?.addEventListener("click", () => {
     governanceState.editingHazardId = "";
     renderGovernanceActiveTab();
@@ -4562,6 +4754,7 @@ function bindGovernanceHazardEntryEvents(content) {
   bindInspectionJsonImportEvents(content);
   bindGovernanceTableImportEvents(content);
   bindGovernanceImportReviewTableEvents(content);
+  bindGovernanceDateRangePickers(content);
 }
 
 function bindInspectionJsonImportEvents(content) {
@@ -4648,7 +4841,7 @@ function buildInspectionJsonHazardReviewStage(root = document) {
       .filter((entry) => entry.sourceId === source.id)
       .sort((a, b) => Number(a.sourceIndex || 0) - Number(b.sourceIndex || 0))
       .forEach((entry) => {
-        const hazard = normalizeGovernanceHazard({
+        const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
           ...entry.hazard,
           checkNo: targetInspection.checkNo,
           checkType: targetInspection.checkType,
@@ -4656,7 +4849,7 @@ function buildInspectionJsonHazardReviewStage(root = document) {
           checkPlace: source.checkPlace || entry.hazard.checkPlace || targetInspection.checkPlace,
           expertName: source.groupLeader || entry.hazard.expertName || targetInspection.groupLeader,
           updatedAt: new Date().toISOString()
-        });
+        }));
         orderedEntries.push({
           ...entry,
           targetInspectionId: targetInspection.id,
@@ -4679,6 +4872,9 @@ function bindGovernanceImportReviewTableEvents(content) {
       if (professionalSelect) professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(select.value);
     });
   });
+  content.querySelectorAll(".governance-import-table .import-auto-classify").forEach((button) => {
+    button.addEventListener("click", () => applyGovernanceClassificationToImportRow(button.closest("[data-import-entry-id]")));
+  });
 }
 
 async function collectGovernanceImportRows(scope = document) {
@@ -4690,7 +4886,7 @@ async function collectGovernanceImportRows(scope = document) {
     if (!entry) continue;
     const photoInput = row.querySelector(".import-before-photos");
     const beforePhotos = await readGovernancePhotoInput(photoInput?.files || [], entry.hazard.beforePhotos || [], "整改前");
-    const hazard = normalizeGovernanceHazard({
+    const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
       ...entry.hazard,
       checkDate: getImportFieldValue(row, ".import-check-date") || entry.hazard.checkDate,
       checkPlace: getImportFieldValue(row, ".import-check-place") || entry.hazard.checkPlace,
@@ -4707,7 +4903,7 @@ async function collectGovernanceImportRows(scope = document) {
       beforePhotos,
       beforePhotoMain: entry.hazard.beforePhotoMain || beforePhotos[0]?.id || "",
       updatedAt: new Date().toISOString()
-    });
+    }));
     rows.push({ ...entry, hazard });
   }
   return rows.filter((row) => row.hazard.problem);
@@ -4823,7 +5019,10 @@ function syncGovernanceTablePlanFromCard(card) {
     inspection.checkType = checkTypeNameFromCode(inspection.checkTypeCode);
   }
   if (inspection.checkDateRange) {
-    inspection.checkDate = parseGovernanceDateInput(inspection.checkDateRange) || inspection.checkDate || getTodayDate();
+    const parsedRange = parseGovernanceDateRange(inspection.checkDateRange);
+    inspection.checkDate = inspection.checkDate || parsedRange.start || parseGovernanceDateInput(inspection.checkDateRange) || getTodayDate();
+    inspection.checkEndDate = inspection.checkEndDate || parsedRange.end || inspection.checkDate;
+    inspection.checkDateRange = buildGovernanceDateRangeValue(inspection.checkDate, inspection.checkEndDate);
   }
   plan.parsedInspection = inspection;
   plan.overwrite = Boolean(card.querySelector("[data-plan-overwrite]")?.checked);
@@ -4915,7 +5114,11 @@ function getGovernanceStatusClass(status) {
  */
 function bindGovernanceLegacyCardEvents(content) {
   content.querySelector("#governanceHazardForm").addEventListener("submit", saveGovernanceHazardFromForm);
-  content.querySelector("#govHazardType").addEventListener("change", () => renderGovernanceActiveTab());
+  content.querySelector("#govHazardType").addEventListener("change", (event) => {
+    const professionalSelect = content.querySelector("#govProfessionalType");
+    if (professionalSelect) professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(event.target.value);
+  });
+  content.querySelector("#autoClassifyHazardButton")?.addEventListener("click", applyGovernanceClassificationToForm);
   content.querySelector("#cancelGovHazardEdit")?.addEventListener("click", () => {
     governanceState.editingHazardId = "";
     renderGovernanceActiveTab();
@@ -4998,6 +5201,7 @@ function renderGovernanceRectificationCard(hazard, index) {
 }
 
 function bindGovernanceRectificationEvents(content) {
+  bindGovernanceDateRangePickers(content);
   content.querySelector("#goLedgerFromRectificationButton").addEventListener("click", () => {
     if (governanceState.dataScope === "rectificationFeedback") {
       renderRectificationFeedbackTool();
@@ -5014,6 +5218,14 @@ function bindGovernanceRectificationEvents(content) {
   content.querySelectorAll("[data-filter]").forEach((input) => {
     input.addEventListener("change", () => {
       governanceState.ledgerFilters[input.dataset.filter] = input.value;
+      renderGovernanceActiveTab();
+    });
+  });
+  content.querySelectorAll("[data-filter-date-range]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const picker = input.closest("[data-date-range-picker]");
+      governanceState.ledgerFilters.checkDateStart = picker?.querySelector("[data-range-start]")?.value || "";
+      governanceState.ledgerFilters.checkDateEnd = picker?.querySelector("[data-range-end]")?.value || "";
       renderGovernanceActiveTab();
     });
   });
@@ -5071,15 +5283,17 @@ async function saveGovernanceHazardFromForm(event) {
   }
   const problem = document.querySelector("#govProblem").value.trim();
   const rectificationMeasures = document.querySelector("#govMeasures").value.trim();
-  if (!problem || !rectificationMeasures) {
-    showToast("请填写问题隐患和整改措施");
+  if (!problem) {
+    showToast("请填写问题隐患");
     return;
   }
   const editing = governanceState.data.hazards.find((item) => item.id === governanceState.editingHazardId);
   const inspectionChanged = Boolean(editing && editing.checkNo !== inspection.checkNo);
   const photos = await readGovernancePhotoInput(document.querySelector("#govBeforePhotos").files, editing?.beforePhotos || [], "整改前");
   const now = new Date().toISOString();
-  const hazard = {
+  const typeTouched = document.querySelector("#govHazardType")?.dataset.userChanged === "1";
+  const professionalTouched = document.querySelector("#govProfessionalType")?.dataset.userChanged === "1";
+  let hazard = {
     id: editing?.id || createId(),
     checkNo: inspection.checkNo,
     hazardNo: editing && !inspectionChanged ? editing.hazardNo : generateGovernanceHazardNo(inspection.checkNo, editing?.id),
@@ -5111,6 +5325,9 @@ async function saveGovernanceHazardFromForm(event) {
     createdAt: editing?.createdAt || now,
     updatedAt: now
   };
+  if (!editing && !typeTouched && !professionalTouched) {
+    hazard = applyGovernanceClassificationSuggestion(hazard, { replaceDefault: true });
+  }
   hazard.autoStatus = computeGovernanceAutoStatus(hazard);
   if (editing) {
     governanceState.data.hazards = governanceState.data.hazards.map((item) => item.id === editing.id ? hazard : item);
@@ -5492,7 +5709,7 @@ function renderGovernanceReportPage(content) {
         <label class="field"><span>报告标题</span><input id="govReportTitle" class="input" value="${escapeAttr(getGovernanceDefaultReportTitle(inspection))}"></label>
         <label class="field"><span>抬头部门</span><input id="govRecipient" class="input" value="${escapeAttr(getGovernanceDefaultReportRecipient(inspection))}" placeholder="公司检查可留空"></label>
         <label class="field"><span>落款公司</span><input id="govReportCompany" class="input" value="${escapeAttr(getGovernanceDefaultReportCompany())}"></label>
-        <label class="field"><span>落款部门</span><input id="govReportDepartment" class="input" value="安防环保部" placeholder="公司检查使用"></label>
+        <label class="field"><span>落款部门</span><input id="govReportDepartment" class="input" value="${escapeAttr(getGovernanceDefaultReportDepartment(inspection))}" placeholder="公司检查使用，系统上级可留空"></label>
         <label class="field"><span>报告日期</span><input id="govReportDate" class="input" value="${escapeAttr(formatChineseDate(getTodayDate()))}"></label>
         <label class="checkline"><input id="govReportPhotos" type="checkbox" checked> 报告插入照片</label>
       </div>
@@ -5509,10 +5726,9 @@ function renderGovernanceReportPage(content) {
         <article class="report-stage-card">
           <span>检查确认后</span>
           <h3>治理表与初版报告</h3>
-          <p>用于发送给责任部门；检查过程导入表单独导出，用于录入安全环保大数据平台。</p>
+          <p>用于发送给责任部门；检查过程导入表请到后面的独立模块核对并导出。</p>
           <div class="actions compact-actions">
             <button id="exportGovGovernanceTableButton" class="button" type="button">导出隐患治理表</button>
-            <button id="exportCheckProcessTableButton" class="button" type="button">导出检查过程导入表</button>
             <button id="exportInitialGovReportButton" class="button primary" type="button">导出初版整改报告</button>
             <button id="goTaskExportFromReportButton" class="button" type="button">整改任务导出</button>
           </div>
@@ -5552,7 +5768,6 @@ function renderGovernanceReportPage(content) {
     renderGovernanceActiveTab();
   });
   content.querySelector("#exportGovGovernanceTableButton").addEventListener("click", () => exportGovernanceTableFromModule());
-  content.querySelector("#exportCheckProcessTableButton").addEventListener("click", () => exportCheckProcessTableFromModule());
   content.querySelector("#exportInitialGovReportButton").addEventListener("click", () => exportGovernanceWordReport("initial"));
   content.querySelector("#exportFinalGovReportButton").addEventListener("click", () => exportGovernanceWordReport("final"));
   content.querySelector("#exportDelaySupplementGovReportButton").addEventListener("click", () => exportGovernanceWordReport("delaySupplement"));
@@ -5567,6 +5782,321 @@ function renderGovernanceReportPage(content) {
     renderHazardGovernanceModule();
   });
   bindGovernanceReportAssignmentEvents(content);
+}
+
+function renderGovernanceProcessImportPage(content) {
+  const inspection = getSelectedGovernanceInspection();
+  const hazards = inspection
+    ? governanceState.data.hazards.filter((hazard) => hazard.checkNo === inspection.checkNo)
+    : [];
+  const missingTypeCount = hazards.filter((hazard) => !hazard.hazardType || !hazard.professionalType).length;
+  const missingExpertCount = hazards.filter((hazard) => !hazard.expertName).length;
+  const missingDateCount = hazards.filter((hazard) => !hazard.checkDate).length;
+  const settings = governanceState.data.settings;
+  const firstHazardType = Object.keys(settings.hazardTypes || {})[0] || "";
+
+  content.innerHTML = `
+    <section class="tool-card glass process-import-module">
+      <div class="section-title">
+        <div>
+          <h2>检查过程导入表</h2>
+          <p class="hint">这里专门核对安全环保大数据平台导入表字段。重点维护负面事实、整改建议、问题分类、专业类型、专家姓名和检查日期。</p>
+        </div>
+        <button id="exportProcessImportTableButton" class="button primary" type="button" ${hazards.length ? "" : "disabled"}>导出检查过程导入表</button>
+      </div>
+      <label class="field"><span>检查任务</span><select id="processInspectionId" class="select">${governanceState.data.inspections.map((item) => `<option value="${item.id}" ${item.id === governanceState.selectedInspectionId ? "selected" : ""}>${escapeHtml(item.checkNo)} ${escapeHtml(item.checkName)}</option>`).join("")}</select></label>
+      <div class="report-summary-strip">
+        <span><b>${hazards.length}</b> 项隐患</span>
+        <span><b>${missingTypeCount}</b> 项未完整分类</span>
+        <span><b>${missingExpertCount}</b> 项未填专家姓名</span>
+        <span><b>${missingDateCount}</b> 项未填检查日期</span>
+      </div>
+    </section>
+    ${hazards.length ? `
+      <section class="tool-card glass process-import-tools">
+        <div class="section-title">
+          <div>
+            <h2>字段批量核对</h2>
+            <p class="hint">可先选择编号，再批量应用分类、专业类型、专家姓名或检查日期；也可以直接用规则词库自动识别所选隐患。</p>
+          </div>
+        </div>
+        <div class="governance-bulk">
+          <div class="governance-bulk-grid process-bulk-grid">
+            <label class="field"><span>问题分类</span><select id="processBulkHazardType" class="select"><option value="">不批量修改</option>${Object.keys(settings.hazardTypes || {}).map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join("")}</select></label>
+            <label class="field"><span>专业类型</span><select id="processBulkProfessionalType" class="select"><option value="">不批量修改</option>${renderGovernanceProfessionalTypeOptions(firstHazardType)}</select></label>
+            <label class="field"><span>专家姓名</span><input id="processBulkExpertName" class="input" placeholder="不填写则不修改"></label>
+            <label class="field"><span>检查日期</span><input id="processBulkCheckDate" class="input" type="date"></label>
+          </div>
+          <div class="assignment-number-panel">
+            <div class="assignment-number-head">
+              <strong>选择要处理的隐患</strong>
+              <div class="actions">
+                <button id="processSelectAllHazards" class="button ghost" type="button">全选</button>
+                <button id="processClearHazards" class="button ghost" type="button">清空</button>
+              </div>
+            </div>
+            <div class="assignment-number-grid process-number-grid">
+              ${hazards.map((hazard, index) => `
+                <label class="assignment-number-check" title="${escapeAttr(hazard.problem || "")}">
+                  <input class="process-hazard-checkbox" type="checkbox" value="${escapeAttr(hazard.id)}" checked>
+                  <span>${index + 1}</span>
+                </label>
+              `).join("")}
+            </div>
+          </div>
+          <div class="governance-bulk-actions">
+            <p class="field-tip">“自动识别”会根据规则词库重算问题分类和专业类型；人工修改后仍以当前页面保存内容为准。</p>
+            <div class="actions">
+              <button id="processAutoClassifySelectedButton" class="button" type="button">自动识别所选隐患</button>
+              <button id="processApplyBulkButton" class="button primary" type="button">批量应用字段</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="tool-card glass process-import-table-card">
+        <div class="section-title">
+          <div>
+            <h2>逐项核对表</h2>
+            <p class="hint">修改后离开输入框或切换下拉会自动保存。表格保持紧凑，方便一次看更多隐患。</p>
+          </div>
+        </div>
+        ${renderGovernanceProcessImportTable(hazards)}
+      </section>
+    ` : `<section class="tool-card glass"><p class="hint">当前检查暂无隐患，无法生成检查过程导入表。</p></section>`}
+  `;
+
+  bindGovernanceProcessImportEvents(content);
+}
+
+function renderGovernanceProcessImportTable(hazards) {
+  return `
+    <div class="governance-table-wrap process-import-table-wrap">
+      <table class="governance-table process-import-table">
+        <thead>
+          <tr>
+            <th>序号</th>
+            <th>隐患编号</th>
+            <th>负面事实</th>
+            <th>整改建议</th>
+            <th>问题分类</th>
+            <th>专业类型</th>
+            <th>专家姓名</th>
+            <th>检查日期</th>
+            <th>识别</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${hazards.map((hazard, index) => `
+            <tr data-process-hazard-id="${escapeAttr(hazard.id)}">
+              <td>
+                <label class="process-row-selector">
+                  <input class="process-hazard-checkbox" type="checkbox" value="${escapeAttr(hazard.id)}" checked>
+                  <span>${index + 1}</span>
+                </label>
+              </td>
+              <td>${escapeHtml(hazard.hazardNo || "")}</td>
+              <td><textarea class="textarea process-cell-text process-field process-problem" data-field="problem">${escapeHtml(hazard.problem || "")}</textarea></td>
+              <td><textarea class="textarea process-cell-text process-field process-measures" data-field="rectificationMeasures">${escapeHtml(hazard.rectificationMeasures || "")}</textarea></td>
+              <td><select class="select process-mini-select process-field process-hazard-type" data-field="hazardType">${renderGovernanceHazardTypeOptions(hazard.hazardType)}</select></td>
+              <td><select class="select process-mini-select process-field process-professional-type" data-field="professionalType">${renderGovernanceProfessionalTypeOptions(hazard.hazardType, hazard.professionalType)}</select></td>
+              <td><input class="input process-mini-input process-field" data-field="expertName" value="${escapeAttr(hazard.expertName || "")}" placeholder="专家姓名"></td>
+              <td><input class="input process-mini-input process-field" data-field="checkDate" type="date" value="${escapeAttr(hazard.checkDate || "")}"></td>
+              <td>
+                <button class="text-button process-row-classify" type="button">识别</button>
+                <small class="process-classification-hint">${hazard.classificationSource ? `${escapeHtml(hazard.classificationConfidence || "")}% ${escapeHtml((hazard.classificationMatchedKeywords || []).slice(0, 2).join("、"))}` : ""}</small>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function bindGovernanceProcessImportEvents(content) {
+  content.querySelector("#processInspectionId")?.addEventListener("change", (event) => {
+    governanceState.selectedInspectionId = event.target.value;
+    renderGovernanceActiveTab();
+  });
+  content.querySelector("#exportProcessImportTableButton")?.addEventListener("click", exportCheckProcessTableFromModule);
+  content.querySelector("#processBulkHazardType")?.addEventListener("change", (event) => {
+    const professionalSelect = content.querySelector("#processBulkProfessionalType");
+    if (professionalSelect) {
+      professionalSelect.innerHTML = `<option value="">不批量修改</option>${renderGovernanceProfessionalTypeOptions(event.target.value)}`;
+    }
+  });
+  content.querySelector("#processSelectAllHazards")?.addEventListener("click", () => setGovernanceProcessImportSelection(true, content));
+  content.querySelector("#processClearHazards")?.addEventListener("click", () => setGovernanceProcessImportSelection(false, content));
+  content.querySelector("#processApplyBulkButton")?.addEventListener("click", applyGovernanceProcessImportBulkFields);
+  content.querySelector("#processAutoClassifySelectedButton")?.addEventListener("click", applyGovernanceProcessImportAutoClassifySelected);
+
+  content.querySelectorAll(".process-hazard-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => syncGovernanceProcessImportSelection(checkbox.value, checkbox.checked, content));
+  });
+  content.querySelectorAll(".process-hazard-type").forEach((select) => {
+    select.addEventListener("change", async () => {
+      const row = select.closest("[data-process-hazard-id]");
+      const professionalSelect = row?.querySelector(".process-professional-type");
+      if (professionalSelect) {
+        professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(select.value);
+      }
+      await updateGovernanceProcessImportFields(row?.dataset.processHazardId, {
+        hazardType: select.value,
+        professionalType: professionalSelect?.value || ""
+      });
+    });
+  });
+  content.querySelectorAll(".process-field:not(.process-hazard-type)").forEach((field) => {
+    field.addEventListener("change", () => {
+      const row = field.closest("[data-process-hazard-id]");
+      updateGovernanceProcessImportFields(row?.dataset.processHazardId, { [field.dataset.field]: field.value.trim() });
+    });
+    if (field.tagName === "TEXTAREA" || field.tagName === "INPUT") {
+      field.addEventListener("blur", () => {
+        const row = field.closest("[data-process-hazard-id]");
+        updateGovernanceProcessImportFields(row?.dataset.processHazardId, { [field.dataset.field]: field.value.trim() }, true);
+      });
+    }
+  });
+  content.querySelectorAll(".process-row-classify").forEach((button) => {
+    button.addEventListener("click", () => applyGovernanceProcessImportRowClassification(button.closest("[data-process-hazard-id]")));
+  });
+}
+
+function syncGovernanceProcessImportSelection(hazardId, checked, root = document) {
+  root.querySelectorAll(".process-hazard-checkbox").forEach((input) => {
+    if (input.value === hazardId) input.checked = checked;
+  });
+}
+
+function setGovernanceProcessImportSelection(checked, root = document) {
+  root.querySelectorAll(".process-hazard-checkbox").forEach((input) => {
+    input.checked = checked;
+  });
+}
+
+function getSelectedGovernanceProcessImportHazardIds(root = document) {
+  return new Set(Array.from(root.querySelectorAll(".process-hazard-checkbox:checked")).map((input) => input.value));
+}
+
+async function updateGovernanceProcessImportFields(hazardId, fields, silent = false) {
+  if (!hazardId || !fields || !Object.keys(fields).length) return;
+  const allowed = ["problem", "rectificationMeasures", "hazardType", "professionalType", "expertName", "checkDate", "classificationSource", "classificationConfidence", "classificationMatchedKeywords"];
+  let changed = false;
+  governanceState.data.hazards = governanceState.data.hazards.map((hazard) => {
+    if (hazard.id !== hazardId) return hazard;
+    const next = { ...hazard };
+    Object.entries(fields).forEach(([key, value]) => {
+      if (!allowed.includes(key)) return;
+      if (Array.isArray(value)) {
+        if (JSON.stringify(next[key] || []) !== JSON.stringify(value)) {
+          next[key] = value;
+          changed = true;
+        }
+      } else if (String(next[key] || "") !== String(value || "")) {
+        next[key] = value;
+        changed = true;
+      }
+    });
+    if (changed) next.updatedAt = new Date().toISOString();
+    return next;
+  });
+  if (!changed) return;
+  mergeGovernanceSettingsFromHazards(governanceState.data.hazards.filter((hazard) => hazard.id === hazardId));
+  await saveGovernanceData();
+  if (!silent) showToast("检查过程字段已保存");
+}
+
+async function applyGovernanceProcessImportRowClassification(row) {
+  if (!row) return;
+  const suggestion = classifyGovernanceHazardText(
+    row.querySelector(".process-problem")?.value || "",
+    row.querySelector(".process-measures")?.value || ""
+  );
+  const hint = row.querySelector(".process-classification-hint");
+  if (!suggestion) {
+    if (hint) hint.textContent = "未匹配";
+    showToast("未匹配到合适分类");
+    return;
+  }
+  const typeSelect = row.querySelector(".process-hazard-type");
+  const professionalSelect = row.querySelector(".process-professional-type");
+  if (typeSelect) typeSelect.value = suggestion.hazardType;
+  if (professionalSelect) {
+    professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(suggestion.hazardType, suggestion.professionalType);
+    professionalSelect.value = suggestion.professionalType;
+  }
+  if (hint) hint.textContent = `${suggestion.confidence}% ${suggestion.matchedKeywords.slice(0, 2).join("、")}`;
+  await updateGovernanceProcessImportFields(row.dataset.processHazardId, {
+    hazardType: suggestion.hazardType,
+    professionalType: suggestion.professionalType,
+    classificationSource: "规则词库",
+    classificationConfidence: suggestion.confidence,
+    classificationMatchedKeywords: suggestion.matchedKeywords
+  }, true);
+  showToast(`已识别：${suggestion.hazardType} / ${suggestion.professionalType}`);
+}
+
+async function applyGovernanceProcessImportAutoClassifySelected() {
+  const selectedIds = getSelectedGovernanceProcessImportHazardIds();
+  if (!selectedIds.size) {
+    showToast("请先选择隐患编号");
+    return;
+  }
+  let matched = 0;
+  governanceState.data.hazards = governanceState.data.hazards.map((hazard) => {
+    if (!selectedIds.has(hazard.id)) return hazard;
+    const suggestion = classifyGovernanceHazardText(hazard.problem, hazard.rectificationMeasures);
+    if (!suggestion) return hazard;
+    matched += 1;
+    return {
+      ...hazard,
+      hazardType: suggestion.hazardType,
+      professionalType: suggestion.professionalType,
+      classificationSource: "规则词库",
+      classificationConfidence: suggestion.confidence,
+      classificationMatchedKeywords: suggestion.matchedKeywords,
+      updatedAt: new Date().toISOString()
+    };
+  });
+  if (!matched) {
+    showToast("所选隐患未匹配到合适分类");
+    return;
+  }
+  await saveGovernanceData();
+  showToast(`已识别 ${matched} 条隐患`);
+  renderGovernanceActiveTab();
+}
+
+async function applyGovernanceProcessImportBulkFields() {
+  const selectedIds = getSelectedGovernanceProcessImportHazardIds();
+  if (!selectedIds.size) {
+    showToast("请先选择隐患编号");
+    return;
+  }
+  const values = {
+    hazardType: document.querySelector("#processBulkHazardType")?.value || "",
+    professionalType: document.querySelector("#processBulkProfessionalType")?.value || "",
+    expertName: document.querySelector("#processBulkExpertName")?.value.trim() || "",
+    checkDate: document.querySelector("#processBulkCheckDate")?.value || ""
+  };
+  const activeEntries = Object.entries(values).filter(([, value]) => value);
+  if (!activeEntries.length) {
+    showToast("请至少填写一项批量内容");
+    return;
+  }
+  governanceState.data.hazards = governanceState.data.hazards.map((hazard) => {
+    if (!selectedIds.has(hazard.id)) return hazard;
+    return {
+      ...hazard,
+      ...Object.fromEntries(activeEntries),
+      updatedAt: new Date().toISOString()
+    };
+  });
+  mergeGovernanceSettingsFromHazards(governanceState.data.hazards.filter((hazard) => selectedIds.has(hazard.id)));
+  await saveGovernanceData();
+  showToast("批量修改成功");
+  renderGovernanceActiveTab();
 }
 
 function renderGovernanceReportAssignmentPanel(hazards) {
@@ -5841,7 +6371,7 @@ async function exportGovernanceWordReport(type) {
   const title = document.querySelector("#govReportTitle").value.trim() || getGovernanceDefaultReportTitle(inspection);
   const recipient = document.querySelector("#govRecipient").value.trim() || getGovernanceDefaultReportRecipient(inspection);
   const reportCompany = document.querySelector("#govReportCompany").value.trim() || getGovernanceDefaultReportCompany();
-  const reportDepartment = document.querySelector("#govReportDepartment")?.value.trim() || "安防环保部";
+  const reportDepartment = document.querySelector("#govReportDepartment")?.value.trim() || getGovernanceDefaultReportDepartment(inspection);
   const reportDate = document.querySelector("#govReportDate")?.value.trim() || formatChineseDate(getTodayDate());
   const children = [
     reportTitleParagraph(d, title, templateContext.titleStyleId),
@@ -5856,7 +6386,7 @@ async function exportGovernanceWordReport(type) {
   children.push(reportLevelOneParagraph(d, "一、问题隐患及整治情况", templateContext.levelOneStyleId));
   for (let index = 0; index < hazards.length; index += 1) {
     const hazard = hazards[index];
-    children.push(reportHazardTitleParagraph(d, `${index + 1}. ${ensureChinesePeriod(hazard.problem)}`, templateContext.bodyStyleId));
+    children.push(reportHazardTitleParagraph(d, `${index + 1}. ${ensureChinesePeriod(hazard.problem)}`, templateContext.rectificationTitleStyleId || templateContext.bodyStyleId));
     children.push(reportLabeledParagraph(d, "整改措施：", ensureChinesePeriod(hazard.rectificationMeasures), templateContext.bodyStyleId));
     const completion = type === "initial"
       ? "已完成整改，已按要求落实整改措施。"
@@ -5951,7 +6481,16 @@ function getGovernanceDefaultReportRecipient(inspection) {
   if (!inspection) return "安防环保部";
   const profile = getGovernanceReportProfile(inspection);
   if (profile.kind === "company") return "";
+  const typeCode = checkTypeCodeFromCheckNo(inspection?.checkNo)
+    || inspection?.checkTypeCode
+    || checkTypeCodeFromName(inspection?.checkType || "");
+  if (typeCode === "SJ") return "中核广东矿业安防环保部";
   return inspection.leadDept || "上级检查部门";
+}
+
+function getGovernanceDefaultReportDepartment(inspection) {
+  const profile = getGovernanceReportProfile(inspection);
+  return profile.kind === "company" ? "安防环保部" : "";
 }
 
 function buildGovernanceReportIntro(inspection, hazards, type, profile = getGovernanceReportProfile(inspection)) {
@@ -6046,6 +6585,7 @@ function renderGovernanceSettingsPage(content) {
         <label class="field"><span>验收人</span><textarea id="setAcceptors" class="textarea small-textarea">${escapeHtml(settings.acceptors.join("\n"))}</textarea></label>
         <label class="field"><span>报告落款公司</span><textarea id="setReportCompanies" class="textarea small-textarea">${escapeHtml(settings.reportCompanies.join("\n"))}</textarea></label>
         <label class="field span-2"><span>问题分类与专业类型</span><textarea id="setHazardTypes" class="textarea" placeholder="物的不安全状态:消防安全,标志标识">${escapeHtml(Object.entries(settings.hazardTypes).map(([key, values]) => `${key}:${values.join(",")}`).join("\n"))}</textarea></label>
+        <label class="field span-2"><span>规则词库</span><textarea id="setClassificationKeywords" class="textarea classification-keyword-textarea" placeholder="物的不安全状态/消防安全: 消防,灭火器,消火栓,水带">${escapeHtml(formatClassificationKeywordSettings(settings.classificationKeywords))}</textarea><small class="field-help">格式：问题分类/专业类型: 关键词1,关键词2。识别只做推荐，导入核对和单项录入里仍可人工修改。</small></label>
         <div class="actions span-2"><button class="button primary" type="submit">保存基础设置</button></div>
       </form>
     </section>
@@ -6061,7 +6601,11 @@ async function saveGovernanceSettingsFromForm(event) {
     supervisionLeaders: splitSettingList(document.querySelector("#setLeaders").value),
     acceptors: splitSettingList(document.querySelector("#setAcceptors").value),
     reportCompanies: splitSettingList(document.querySelector("#setReportCompanies").value),
-    hazardTypes: parseHazardTypeSettings(document.querySelector("#setHazardTypes").value)
+    hazardTypes: parseHazardTypeSettings(document.querySelector("#setHazardTypes").value),
+    classificationKeywords: normalizeGovernanceClassificationKeywordSettings(
+      parseClassificationKeywordSettings(document.querySelector("#setClassificationKeywords").value),
+      parseHazardTypeSettings(document.querySelector("#setHazardTypes").value)
+    )
   };
   await saveGovernanceData();
   showToast("基础设置已保存");
@@ -6388,7 +6932,7 @@ function buildInspectionJsonImportEntries(fileName, data, targetInspection) {
     const checkDate = source.checkDate || sourceInfo.date || rootInfo.date;
     const checkPlace = source.checkPlace || sourceInfo.location || rootInfo.location;
     const expertName = source.expertName || source.finder || sourceInfo.leader || rootInfo.leader || targetInspection.groupLeader || "";
-    const hazard = normalizeGovernanceHazard({
+    const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
       ...source,
       id: source.id || createId(),
       checkNo: targetInspection.checkNo,
@@ -6405,7 +6949,7 @@ function buildInspectionJsonImportEntries(fileName, data, targetInspection) {
       beforePhotos: source.beforePhotos || source.photos || [],
       feedbackSource: `检查JSON导入：${fileName}`,
       createdAt: source.createdAt || source.createTime || new Date().toISOString()
-    });
+    }));
     const duplicate = findDuplicateGovernanceHazard(hazard);
     return {
       id: createId(),
@@ -6456,7 +7000,7 @@ async function previewGovernanceTableExcelImport(event) {
       tablePlans.push(tablePlan);
       parsed.hazards.forEach((source, index) => {
         const baseInspection = parsed.inspection;
-        const hazard = normalizeGovernanceHazard({
+        const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
           ...source,
           id: source.id || createId(),
           checkNo: baseInspection.checkNo,
@@ -6467,7 +7011,7 @@ async function previewGovernanceTableExcelImport(event) {
           checkPlace: source.checkPlace || parsed.inspection.checkPlace,
           expertName: source.expertName || parsed.inspection.groupLeader || "",
           feedbackSource: `隐患治理表导入：${file.name}`
-        });
+        }));
         entries.push({
           id: createId(),
           tablePlanId: tablePlan.id,
@@ -6510,6 +7054,123 @@ function findDuplicateGovernanceHazard(hazard) {
 
 function normalizeComparableText(value) {
   return String(value || "").replace(/\s+/g, "").trim();
+}
+
+function normalizeClassificationText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s　,，。；;：:、（）()【】[\]《》<>“”"']/g, "");
+}
+
+function getDefaultGovernanceHazardTypePair() {
+  const settings = governanceState.data?.settings || createDefaultGovernanceSettings();
+  const hazardType = Object.keys(settings.hazardTypes || {})[0] || "";
+  const professionalType = (settings.hazardTypes?.[hazardType] || [])[0] || "";
+  return { hazardType, professionalType };
+}
+
+function classifyGovernanceHazardText(problem, rectificationMeasures = "", settings = governanceState.data?.settings) {
+  const rules = normalizeGovernanceClassificationKeywordSettings(
+    settings?.classificationKeywords,
+    settings?.hazardTypes || createDefaultGovernanceSettings().hazardTypes
+  );
+  const problemText = normalizeClassificationText(problem);
+  const measureText = normalizeClassificationText(rectificationMeasures);
+  if (!problemText && !measureText) return null;
+
+  let best = null;
+  Object.entries(rules).forEach(([hazardType, professionalMap]) => {
+    Object.entries(professionalMap || {}).forEach(([professionalType, keywords]) => {
+      const matchedKeywords = [];
+      let score = 0;
+      (keywords || []).forEach((keyword) => {
+        const normalizedKeyword = normalizeClassificationText(keyword);
+        if (!normalizedKeyword) return;
+        if (problemText.includes(normalizedKeyword)) {
+          score += 4 + Math.min(normalizedKeyword.length, 8) * 0.25;
+          matchedKeywords.push(keyword);
+        }
+        if (measureText.includes(normalizedKeyword)) {
+          score += 1.5 + Math.min(normalizedKeyword.length, 6) * 0.1;
+          matchedKeywords.push(keyword);
+        }
+      });
+      if (score > 0 && (!best || score > best.score)) {
+        best = {
+          hazardType,
+          professionalType,
+          score,
+          confidence: Math.min(99, Math.max(35, Math.round(score * 12))),
+          matchedKeywords: [...new Set(matchedKeywords)].slice(0, 6)
+        };
+      }
+    });
+  });
+  return best;
+}
+
+function applyGovernanceClassificationSuggestion(hazard, options = {}) {
+  const suggestion = classifyGovernanceHazardText(hazard.problem, hazard.rectificationMeasures);
+  if (!suggestion) return hazard;
+  const defaults = getDefaultGovernanceHazardTypePair();
+  const isDefaultPair = hazard.hazardType === defaults.hazardType && hazard.professionalType === defaults.professionalType;
+  const shouldReplace = Boolean(options.overwrite || !hazard.hazardType || !hazard.professionalType || (options.replaceDefault && isDefaultPair));
+  if (!shouldReplace) return hazard;
+  return {
+    ...hazard,
+    hazardType: suggestion.hazardType,
+    professionalType: suggestion.professionalType,
+    classificationSource: "规则词库",
+    classificationConfidence: suggestion.confidence,
+    classificationMatchedKeywords: suggestion.matchedKeywords
+  };
+}
+
+function applyGovernanceClassificationToForm() {
+  const suggestion = classifyGovernanceHazardText(
+    document.querySelector("#govProblem")?.value || "",
+    document.querySelector("#govMeasures")?.value || ""
+  );
+  const hint = document.querySelector("#govClassificationHint");
+  if (!suggestion) {
+    if (hint) hint.textContent = "未匹配到合适分类，可在基础设置中补充关键词。";
+    showToast("未匹配到合适分类");
+    return;
+  }
+  const typeSelect = document.querySelector("#govHazardType");
+  const professionalSelect = document.querySelector("#govProfessionalType");
+  if (!typeSelect || !professionalSelect) return;
+  typeSelect.value = suggestion.hazardType;
+  typeSelect.dataset.userChanged = "1";
+  professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(suggestion.hazardType, suggestion.professionalType);
+  professionalSelect.value = suggestion.professionalType;
+  professionalSelect.dataset.userChanged = "1";
+  if (hint) {
+    hint.textContent = `已识别为：${suggestion.hazardType} / ${suggestion.professionalType}，匹配：${suggestion.matchedKeywords.join("、") || "规则词"}`;
+  }
+  showToast(`已识别：${suggestion.hazardType} / ${suggestion.professionalType}`);
+}
+
+function applyGovernanceClassificationToImportRow(row) {
+  if (!row) return;
+  const suggestion = classifyGovernanceHazardText(
+    row.querySelector(".import-problem")?.value || "",
+    row.querySelector(".import-measures")?.value || ""
+  );
+  const hint = row.querySelector(".import-classification-hint");
+  if (!suggestion) {
+    if (hint) hint.textContent = "未匹配";
+    showToast("未匹配到合适分类");
+    return;
+  }
+  const typeSelect = row.querySelector(".import-hazard-type");
+  const professionalSelect = row.querySelector(".import-professional-type");
+  if (!typeSelect || !professionalSelect) return;
+  typeSelect.value = suggestion.hazardType;
+  professionalSelect.innerHTML = renderGovernanceProfessionalTypeOptions(suggestion.hazardType, suggestion.professionalType);
+  professionalSelect.value = suggestion.professionalType;
+  if (hint) hint.textContent = `${suggestion.confidence}% ${suggestion.matchedKeywords.slice(0, 2).join("、")}`;
+  showToast(`已识别：${suggestion.hazardType} / ${suggestion.professionalType}`);
 }
 
 function renderGovernanceHazardImportPreview() {
@@ -6586,12 +7247,15 @@ function renderGovernanceHazardImportEntry(entry, index) {
 }
 
 function renderGovernanceHazardTypeOptions(selected = "") {
-  return Object.keys(governanceState.data.settings.hazardTypes).map((name) => `<option ${selected === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
+  const options = Object.keys(governanceState.data.settings.hazardTypes);
+  if (selected && !options.includes(selected)) options.push(selected);
+  return options.map((name) => `<option ${selected === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
 }
 
 function renderGovernanceProfessionalTypeOptions(hazardType = "", selected = "") {
   const type = hazardType || Object.keys(governanceState.data.settings.hazardTypes)[0] || "";
-  const options = governanceState.data.settings.hazardTypes[type] || [];
+  const options = [...(governanceState.data.settings.hazardTypes[type] || [])];
+  if (selected && !options.includes(selected)) options.push(selected);
   return options.map((name) => `<option ${selected === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
 }
 
@@ -6664,7 +7328,7 @@ function commitGovernanceHazardRowsToSelectedInspection(draft, rows) {
       ? governanceState.data.hazards.find((item) => item.id === row.duplicateHazardId)
       : null;
     const useCover = row.action === "cover" && duplicate;
-    const hazard = normalizeGovernanceHazard({
+    const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
       ...row.hazard,
       id: useCover ? duplicate.id : createId(),
       checkNo: targetInspection.checkNo,
@@ -6673,7 +7337,7 @@ function commitGovernanceHazardRowsToSelectedInspection(draft, rows) {
       feedbackSource: row.hazard.feedbackSource || "隐患汇总导入",
       createdAt: useCover ? duplicate.createdAt : row.hazard.createdAt,
       updatedAt: new Date().toISOString()
-    });
+    }));
     if (useCover) {
       governanceState.data.hazards = governanceState.data.hazards.map((item) => item.id === duplicate.id ? hazard : item);
     } else {
@@ -6879,7 +7543,7 @@ function parseGovernanceTableWorkbook(workbook, fileName = "隐患治理表.xlsx
 
     const handlingMeasures = getGovernanceTableCell(row, headerMap.handlingMeasures);
     const currentStatus = inferGovernanceStatusFromHandling(handlingMeasures);
-    const hazard = normalizeGovernanceHazard({
+    const hazard = applyGovernanceClassificationSuggestion(normalizeGovernanceHazard({
       id: createId(),
       checkNo: inspection.checkNo,
       hazardNo: `${inspection.checkNo}-${String(hazards.length + 1).padStart(3, "0")}`,
@@ -6903,7 +7567,7 @@ function parseGovernanceTableWorkbook(workbook, fileName = "隐患治理表.xlsx
       feedbackSource: "隐患治理表导入",
       createdAt: now,
       updatedAt: now
-    });
+    }));
     hazards.push(hazard);
   }
 
@@ -7008,6 +7672,246 @@ function buildGovernanceDateRangeValue(start, end) {
   const normalizedEnd = parseGovernanceDateInput(end) || end || normalizedStart;
   if (!normalizedStart) return "";
   return normalizedEnd && normalizedEnd !== normalizedStart ? `${normalizedStart} 至 ${normalizedEnd}` : normalizedStart;
+}
+
+function renderGovernanceDateRangePicker({
+  id,
+  label,
+  start,
+  end,
+  startInputId = "",
+  endInputId = "",
+  rangeInputAttrs = "",
+  startInputAttrs = "",
+  endInputAttrs = "",
+  allowEmpty = false,
+  allowClear = false,
+  dispatchMode = "all",
+  emptyText = "请选择检查时间"
+}) {
+  const normalizedStart = parseGovernanceDateInput(start) || (allowEmpty ? "" : getTodayDate());
+  const normalizedEnd = parseGovernanceDateInput(end) || normalizedStart;
+  const monthValue = (normalizedStart || getTodayDate()).slice(0, 7);
+  const buttonText = formatGovernanceDateRangeButtonText(normalizedStart, normalizedEnd, false, emptyText);
+  return `
+    <div class="field date-range-field" data-date-range-picker data-picker-id="${escapeAttr(id)}" data-month="${escapeAttr(monthValue)}" data-waiting-end="0" data-dispatch-mode="${escapeAttr(dispatchMode)}" data-allow-empty="${allowEmpty ? "1" : "0"}" data-allow-clear="${allowClear ? "1" : "0"}" data-empty-text="${escapeAttr(emptyText)}">
+      <span>${escapeHtml(label || "日期范围")}</span>
+      <button class="date-range-button" type="button" data-range-toggle>${escapeHtml(buttonText)}</button>
+      <input ${startInputId ? `id="${escapeAttr(startInputId)}"` : ""} data-range-start ${startInputAttrs} type="hidden" value="${escapeAttr(normalizedStart)}">
+      <input ${endInputId ? `id="${escapeAttr(endInputId)}"` : ""} data-range-end ${endInputAttrs} type="hidden" value="${escapeAttr(normalizedEnd)}">
+      <input data-range-value ${rangeInputAttrs} type="hidden" value="${escapeAttr(buildGovernanceDateRangeValue(normalizedStart, normalizedEnd))}">
+      <div class="date-range-popover" data-range-popover hidden>
+        ${renderGovernanceDateRangeCalendar(monthValue, normalizedStart, normalizedEnd, false, allowClear)}
+      </div>
+    </div>
+  `;
+}
+
+function renderGovernanceDateRangeCalendar(monthValue, start, end, waitingEnd, allowClear = false) {
+  const monthDate = parseGovernanceMonthValue(monthValue);
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startOffset = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let index = 0; index < startOffset; index += 1) {
+    cells.push(`<span class="date-range-empty"></span>`);
+  }
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const value = buildGovernanceDateString(year, month + 1, day);
+    const classes = [
+      "date-range-day",
+      value === start ? "is-start" : "",
+      value === end && end !== start ? "is-end" : "",
+      start && end && value > start && value < end ? "is-between" : "",
+      value === getTodayDate() ? "is-today" : ""
+    ].filter(Boolean).join(" ");
+    cells.push(`<button class="${classes}" type="button" data-range-date="${escapeAttr(value)}">${day}</button>`);
+  }
+  return `
+    <div class="date-range-calendar">
+      <div class="date-range-calendar-head">
+        <button class="icon-button" type="button" data-range-month="-1" title="上个月">‹</button>
+        <strong>${year}年${month + 1}月</strong>
+        <button class="icon-button" type="button" data-range-month="1" title="下个月">›</button>
+      </div>
+      <p class="date-range-tip">${waitingEnd ? "请选择结束日期" : "请选择开始日期"}</p>
+      ${allowClear ? `<button class="date-range-clear" type="button" data-range-clear>清空日期筛选</button>` : ""}
+      <div class="date-range-weekdays">
+        ${["日", "一", "二", "三", "四", "五", "六"].map((item) => `<span>${item}</span>`).join("")}
+      </div>
+      <div class="date-range-days">${cells.join("")}</div>
+    </div>
+  `;
+}
+
+function bindGovernanceDateRangePickers(root = document) {
+  root.querySelectorAll("[data-date-range-picker]").forEach((picker) => {
+    picker.querySelector("[data-range-toggle]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeOtherGovernanceDateRangePickers(picker);
+      const popover = picker.querySelector("[data-range-popover]");
+      if (popover) popover.hidden = !popover.hidden;
+      picker.classList.toggle("is-open", popover && !popover.hidden);
+    });
+    picker.querySelector("[data-range-popover]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.target.closest("[data-range-clear]")) {
+        clearGovernanceDateRangePicker(picker);
+        return;
+      }
+      const monthButton = event.target.closest("[data-range-month]");
+      if (monthButton) {
+        shiftGovernanceDateRangePickerMonth(picker, Number(monthButton.dataset.rangeMonth || 0));
+        return;
+      }
+      const dateButton = event.target.closest("[data-range-date]");
+      if (dateButton) {
+        selectGovernanceDateRangePickerDate(picker, dateButton.dataset.rangeDate);
+      }
+    });
+    picker.querySelector("[data-range-popover]")?.addEventListener("mouseover", (event) => {
+      const dateButton = event.target.closest("[data-range-date]");
+      if (dateButton) previewGovernanceDateRangePicker(picker, dateButton.dataset.rangeDate);
+    });
+    picker.querySelector("[data-range-popover]")?.addEventListener("mouseleave", () => {
+      clearGovernanceDateRangePreview(picker);
+    });
+  });
+}
+
+function closeOtherGovernanceDateRangePickers(activePicker) {
+  document.querySelectorAll("[data-date-range-picker]").forEach((picker) => {
+    if (picker === activePicker) return;
+    const popover = picker.querySelector("[data-range-popover]");
+    if (popover) popover.hidden = true;
+    picker.classList.remove("is-open");
+  });
+}
+
+function shiftGovernanceDateRangePickerMonth(picker, delta) {
+  const monthDate = parseGovernanceMonthValue(picker.dataset.month || getTodayDate().slice(0, 7));
+  monthDate.setMonth(monthDate.getMonth() + delta);
+  picker.dataset.month = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}`;
+  refreshGovernanceDateRangePickerCalendar(picker);
+}
+
+function selectGovernanceDateRangePickerDate(picker, dateValue) {
+  const startInput = picker.querySelector("[data-range-start]");
+  const endInput = picker.querySelector("[data-range-end]");
+  const rangeInput = picker.querySelector("[data-range-value]");
+  const button = picker.querySelector("[data-range-toggle]");
+  const popover = picker.querySelector("[data-range-popover]");
+  const currentStart = startInput?.value || "";
+  const currentEnd = endInput?.value || "";
+  const isWaitingEnd = picker.dataset.waitingEnd === "1";
+  const dispatchMode = picker.dataset.dispatchMode || "all";
+  let nextStart = currentStart;
+  let nextEnd = currentEnd;
+  let completed = false;
+
+  if (!isWaitingEnd || !currentStart) {
+    nextStart = dateValue;
+    nextEnd = dateValue;
+    picker.dataset.waitingEnd = "1";
+    picker.dataset.month = dateValue.slice(0, 7);
+    if (button) button.textContent = formatGovernanceDateRangeButtonText(nextStart, "", true, picker.dataset.emptyText || "请选择检查时间");
+  } else {
+    nextStart = currentStart <= dateValue ? currentStart : dateValue;
+    nextEnd = currentStart <= dateValue ? dateValue : currentStart;
+    picker.dataset.waitingEnd = "0";
+    picker.dataset.month = nextEnd.slice(0, 7);
+    completed = true;
+    if (button) button.textContent = formatGovernanceDateRangeButtonText(nextStart, nextEnd, false, picker.dataset.emptyText || "请选择检查时间");
+    if (popover) popover.hidden = true;
+    picker.classList.remove("is-open");
+  }
+
+  if (startInput) startInput.value = nextStart;
+  if (endInput) endInput.value = nextEnd;
+  if (rangeInput) rangeInput.value = buildGovernanceDateRangeValue(nextStart, nextEnd);
+  if (dispatchMode !== "complete" || completed) {
+    [startInput, endInput, rangeInput].forEach((input) => {
+      input?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+  refreshGovernanceDateRangePickerCalendar(picker);
+}
+
+function previewGovernanceDateRangePicker(picker, hoverDate) {
+  if (picker.dataset.waitingEnd !== "1") return;
+  const start = picker.querySelector("[data-range-start]")?.value || "";
+  if (!start || !hoverDate) return;
+  const previewStart = start <= hoverDate ? start : hoverDate;
+  const previewEnd = start <= hoverDate ? hoverDate : start;
+  picker.querySelectorAll("[data-range-date]").forEach((button) => {
+    const value = button.dataset.rangeDate || "";
+    button.classList.toggle("is-preview-start", value === previewStart);
+    button.classList.toggle("is-preview-end", value === previewEnd && previewEnd !== previewStart);
+    button.classList.toggle("is-preview-between", value > previewStart && value < previewEnd);
+  });
+}
+
+function clearGovernanceDateRangePreview(picker) {
+  picker.querySelectorAll("[data-range-date]").forEach((button) => {
+    button.classList.remove("is-preview-start", "is-preview-end", "is-preview-between");
+  });
+}
+
+function clearGovernanceDateRangePicker(picker) {
+  const startInput = picker.querySelector("[data-range-start]");
+  const endInput = picker.querySelector("[data-range-end]");
+  const rangeInput = picker.querySelector("[data-range-value]");
+  const button = picker.querySelector("[data-range-toggle]");
+  const popover = picker.querySelector("[data-range-popover]");
+  if (startInput) startInput.value = "";
+  if (endInput) endInput.value = "";
+  if (rangeInput) rangeInput.value = "";
+  picker.dataset.waitingEnd = "0";
+  picker.dataset.month = getTodayDate().slice(0, 7);
+  if (button) button.textContent = formatGovernanceDateRangeButtonText("", "", false, picker.dataset.emptyText || "请选择检查时间");
+  if (popover) popover.hidden = true;
+  picker.classList.remove("is-open");
+  [startInput, endInput, rangeInput].forEach((input) => {
+    input?.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function refreshGovernanceDateRangePickerCalendar(picker) {
+  const popover = picker.querySelector("[data-range-popover]");
+  if (!popover) return;
+  popover.innerHTML = renderGovernanceDateRangeCalendar(
+    picker.dataset.month || getTodayDate().slice(0, 7),
+    picker.querySelector("[data-range-start]")?.value || "",
+    picker.querySelector("[data-range-end]")?.value || "",
+    picker.dataset.waitingEnd === "1",
+    picker.dataset.allowClear === "1"
+  );
+}
+
+function parseGovernanceMonthValue(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{1,2})/);
+  if (!match) {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  }
+  return new Date(Number(match[1]), Number(match[2]) - 1, 1);
+}
+
+function formatGovernanceDateRangeButtonText(start, end, waitingEnd = false, emptyText = "请选择检查时间") {
+  if (!start) return emptyText;
+  const startText = formatGovernanceDateShort(start);
+  if (waitingEnd) return `${startText} - 请选择结束日期`;
+  const endText = formatGovernanceDateShort(end || start);
+  return startText === endText ? startText : `${startText} - ${endText}`;
+}
+
+function formatGovernanceDateShort(value) {
+  const parts = parseAnnualLedgerDateParts(value);
+  if (!parts) return "请选择检查时间";
+  return `${parts.year}/${String(parts.month).padStart(2, "0")}/${String(parts.day).padStart(2, "0")}`;
 }
 
 function buildGovernanceDateString(year, month, day) {
@@ -7180,8 +8084,8 @@ function getGovernanceStats(hazards) {
     done: hazards.filter((item) => item.autoStatus === "已整改").length,
     unfinished: hazards.filter((item) => item.autoStatus !== "已整改").length,
     overdue: hazards.filter((item) => item.autoStatus === "已逾期").length,
-    due3: hazards.filter((item) => isDueWithinDays(item.deadline, 3) && item.autoStatus !== "已整改").length,
-    due7: hazards.filter((item) => isDueWithinDays(item.deadline, 7) && item.autoStatus !== "已整改").length,
+    due3: hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 3) && item.autoStatus !== "已整改").length,
+    due7: hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 7) && item.autoStatus !== "已整改").length,
     notClosed: hazards.filter((item) => item.platformCloseStatus !== "已上传闭环").length
   };
 }
@@ -7596,14 +8500,14 @@ function buildGovernanceScripts(inspection, hazards, depts) {
     const deptHazards = hazards.filter((item) => item.responsibleDept === dept);
     scripts.push({
       title: `${dept}任务话术`,
-      text: `【${dept}】：\n你部门涉及【${checkName}】隐患整改任务共${deptHazards.length}项，具体隐患如下：\n${deptHazards.map((hazard, index) => `${index + 1}.【${hazard.hazardNo}】问题隐患：${hazard.problem}；整改期限：${hazard.deadline || "未填写"}。`).join("\n")}\n请按要求完成整改，并通过手机端导出整改反馈 JSON 后反馈。`
+      text: `【${dept}】：\n你部门涉及【${checkName}】隐患整改任务共${deptHazards.length}项，具体隐患如下：\n${deptHazards.map((hazard, index) => `${index + 1}.【${hazard.hazardNo}】问题隐患：${hazard.problem}；整改期限：${getGovernanceDisplayDeadline(hazard) || "未填写"}。`).join("\n")}\n请按要求完成整改，并通过手机端导出整改反馈 JSON 后反馈。`
     });
   });
   const overdue = hazards.filter((item) => item.autoStatus === "已逾期");
   if (overdue.length) {
     scripts.push({ title: "逾期催办话术", text: `【逾期隐患催办提醒】\n相关责任部门：\n仍有${overdue.length}项隐患已超过整改期限，涉及检查：【${checkName}】。请立即组织整改，并反馈整改完成情况、处理措施及整改后照片。` });
   }
-  const due3 = hazards.filter((item) => isDueWithinDays(item.deadline, 3) && item.autoStatus !== "已整改");
+  const due3 = hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 3) && item.autoStatus !== "已整改");
   scripts.push({ title: "即将到期提醒话术", text: `【整改到期提醒】\n相关责任部门：\n有${due3.length}项隐患将在3天内到期，请提前安排整改，按期反馈整改情况，避免逾期。` });
   return scripts;
 }
@@ -7619,6 +8523,28 @@ function parseHazardTypeSettings(text) {
     if (name?.trim()) output[name.trim()] = splitSettingList(values);
   });
   return Object.keys(output).length ? output : createDefaultGovernanceSettings().hazardTypes;
+}
+
+function formatClassificationKeywordSettings(rules) {
+  return Object.entries(rules || {})
+    .flatMap(([hazardType, professionalMap]) => Object.entries(professionalMap || {}).map(([professionalType, keywords]) => (
+      `${hazardType}/${professionalType}: ${(keywords || []).join(",")}`
+    )))
+    .join("\n");
+}
+
+function parseClassificationKeywordSettings(text) {
+  const output = {};
+  String(text || "").split(/\n+/).forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const [pathText, keywordText = ""] = trimmed.split(/[:：]/);
+    const [hazardType, professionalType] = String(pathText || "").split(/[\/|｜>＞]/).map((item) => item.trim());
+    if (!hazardType || !professionalType) return;
+    if (!output[hazardType]) output[hazardType] = {};
+    output[hazardType][professionalType] = splitSettingList(keywordText);
+  });
+  return output;
 }
 
 async function renderHazardCheckTool() {
