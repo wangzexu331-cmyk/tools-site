@@ -7,6 +7,7 @@ const HAZARD_RECORD_KEY = "current";
 const RECTIFICATION_FEEDBACK_KEY = "rectificationFeedback";
 const RECTIFICATION_TASK_DATA_KEY = "rectificationTaskData";
 const GOVERNANCE_RECORD_KEY = "hazardGovernanceSystem";
+const BUSINESS_NET_RECORD_KEY = "businessNetRectificationAssistant";
 const GOVERNANCE_STORAGE_DIR_HANDLE_KEY = "governanceStorageDirectoryHandle";
 const GOVERNANCE_LEDGER_DISPLAY_FIELDS_KEY = "governanceLedgerDisplayFields";
 const GOVERNANCE_LEDGER_EXPORT_FIELDS_KEY = "governanceLedgerExportFields";
@@ -72,6 +73,11 @@ const tools = {
     icon: "治",
     render: renderHazardGovernanceModule
   },
+  businessNetAssistant: {
+    title: "商网整改项办理助手",
+    icon: "商",
+    render: renderBusinessNetAssistant
+  },
   future: {
     title: "后续工具预留",
     icon: "+",
@@ -86,7 +92,11 @@ const standaloneToolAliases = {
   check: "hazardCheck",
   rectificationFeedback: "rectificationFeedback",
   rectification: "rectificationFeedback",
-  feedback: "rectificationFeedback"
+  feedback: "rectificationFeedback",
+  businessNetAssistant: "businessNetAssistant",
+  businessNet: "businessNetAssistant",
+  swAssistant: "businessNetAssistant",
+  shangwang: "businessNetAssistant"
 };
 
 const state = {
@@ -224,9 +234,79 @@ const governanceState = {
   hazardEntryMode: "inspectionJson",
   draggingJsonSourceId: "",
   dashboardMetric: "",
+  dashboardDeptFilter: "",
   storageDirectoryHandle: null,
   storageDirectoryName: "",
   storageSyncStatus: ""
+};
+
+const BUSINESS_NET_STAGES = [
+  {
+    key: "send",
+    title: "发送行动项",
+    statusKey: "sendStatus",
+    pending: "未发送",
+    done: "已发送",
+    exception: "异常",
+    currentStatus: "待发送行动项",
+    nextButton: "下一条待发送",
+    copyButtons: [
+      ["problem", "复制隐患内容"],
+      ["rectificationMeasures", "复制整改措施"]
+    ]
+  },
+  {
+    key: "accept",
+    title: "承办行动项",
+    statusKey: "acceptStatus",
+    pending: "未承办",
+    done: "已承办",
+    exception: "异常",
+    currentStatus: "待承办",
+    nextButton: "下一条待承办",
+    copyButtons: [["acceptOpinion", "复制承办意见"]]
+  },
+  {
+    key: "upload",
+    title: "上传整改报告",
+    statusKey: "uploadStatus",
+    pending: "未上传",
+    done: "已上传",
+    exception: "异常",
+    currentStatus: "进展维护",
+    nextButton: "下一条待上传",
+    copyButtons: [["progressFeedback", "复制进展反馈"]]
+  },
+  {
+    key: "audit",
+    title: "审核闭环",
+    statusKey: "auditStatus",
+    pending: "未审核",
+    done: "已审核",
+    exception: "异常",
+    currentStatus: "审核状态",
+    nextButton: "下一条待审核",
+    copyButtons: [["approvalOpinion", "复制审批意见"]]
+  }
+];
+
+const BUSINESS_NET_DEFAULT_TEMPLATES = {
+  progressFeedback: "该隐患已完成整改，整改报告及相关佐证资料已上传，请审核。",
+  approvalOpinion: "经审核，整改责任单位已按要求完成整改，整改资料齐全，同意通过。",
+  acceptOpinion: "已接收该行动项，将按要求组织整改并反馈整改情况。"
+};
+
+const BUSINESS_NET_ALLOWED_FILE_EXTENSIONS = [".pdf", ".doc", ".docx", ".wps", ".jpg", ".jpeg", ".png", ".zip", ".rar"];
+
+const businessNetState = {
+  data: null,
+  selectedTaskId: "",
+  keyword: "",
+  stageFilter: "",
+  activeStage: "send",
+  reportFileRegistry: new Map(),
+  reportFolderName: "",
+  shortcutsBound: false
 };
 
 const app = document.querySelector("#app");
@@ -2989,8 +3069,10 @@ async function renderRectificationFeedbackTool() {
   app.innerHTML = `<section class="tool-card glass"><h2>整改反馈采集</h2><p class="hint">正在读取整改任务...</p></section>`;
   governanceState.dataScope = "rectificationFeedback";
   governanceState.data = await loadRectificationTaskData();
+  recalculateGovernanceData();
   governanceState.activeTab = "rectification";
   governanceState.workflowFocus = "rectify";
+  const stats = getGovernanceStats(governanceState.data.hazards || []);
 
   app.innerHTML = `
     <div class="tool-layout governance-module">
@@ -3008,6 +3090,7 @@ async function renderRectificationFeedbackTool() {
           <input id="rectificationTaskJsonInput" class="hidden" type="file" accept="application/json,.json">
         </div>
       </section>
+      ${renderStandaloneRectificationStats(stats)}
       <section id="governanceContent"></section>
     </div>
   `;
@@ -3016,6 +3099,17 @@ async function renderRectificationFeedbackTool() {
   document.querySelector("#rectificationTaskJsonInput").addEventListener("change", importRectificationTaskJson);
   document.querySelector("#exportRectificationFeedbackButton").addEventListener("click", exportStandaloneRectificationFeedbackJson);
   renderGovernanceRectificationPage(document.querySelector("#governanceContent"));
+}
+
+function renderStandaloneRectificationStats(stats) {
+  return `
+    <section class="tool-card glass standalone-rectification-stats" aria-label="整改反馈统计">
+      <span><b>${stats.total}</b><em>全部隐患</em></span>
+      <span><b>${stats.done}</b><em>已整改</em></span>
+      <span><b>${stats.unfinished}</b><em>未整改</em></span>
+      <span><b>${stats.overdue}</b><em>逾期整改</em></span>
+    </section>
+  `;
 }
 
 async function importRectificationTaskJson(event) {
@@ -3542,13 +3636,20 @@ function renderGovernanceDashboard(content) {
   content.querySelectorAll("[data-metric]").forEach((button) => {
     button.addEventListener("click", () => {
       const metric = button.dataset.metric;
-      if (["unfinished", "overdue", "due3", "due7"].includes(metric)) {
+      if (["unfinished", "overdue", "due3", "due7", "notClosed"].includes(metric)) {
         governanceState.dashboardMetric = governanceState.dashboardMetric === metric ? "" : metric;
         renderGovernanceActiveTab();
         return;
       }
       openGovernanceLedgerByMetric(metric);
     });
+  });
+  content.querySelector("#dashboardDeptFilter")?.addEventListener("change", (event) => {
+    governanceState.dashboardDeptFilter = event.target.value;
+    renderGovernanceActiveTab();
+  });
+  content.querySelector("#exportDashboardMetricButton")?.addEventListener("click", () => {
+    exportGovernanceDashboardMetricTable(governanceState.dashboardMetric);
   });
 }
 
@@ -3659,7 +3760,8 @@ function getGovernanceDashboardMetricLabel(metric) {
     unfinished: "未整改隐患",
     overdue: "已逾期隐患",
     due3: "3天内到期隐患",
-    due7: "7天内到期隐患"
+    due7: "7天内到期隐患",
+    notClosed: "平台未上传闭环隐患"
   }[metric] || "隐患清单";
 }
 
@@ -3669,22 +3771,52 @@ function getGovernanceDashboardMetricHazards(metric) {
   if (metric === "overdue") return hazards.filter((item) => item.autoStatus === "已逾期");
   if (metric === "due3") return hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 3) && item.autoStatus !== "已整改");
   if (metric === "due7") return hazards.filter((item) => isDueWithinDays(getGovernanceDisplayDeadline(item), 7) && item.autoStatus !== "已整改");
+  if (metric === "notClosed") return hazards.filter((item) => item.platformCloseStatus !== "已上传闭环");
   return [];
 }
 
 function renderGovernanceDashboardMetricPanel(metric, hazards) {
-  const groups = groupGovernanceHazardsByInspectionForDashboard(hazards);
+  const departmentOptions = getGovernanceDashboardDepartments(hazards);
+  if (governanceState.dashboardDeptFilter && !departmentOptions.includes(governanceState.dashboardDeptFilter)) {
+    governanceState.dashboardDeptFilter = "";
+  }
+  const filteredHazards = filterGovernanceDashboardMetricByDept(hazards);
+  const groups = groupGovernanceHazardsByInspectionForDashboard(filteredHazards);
+  const title = buildGovernanceDashboardMetricExportTitle();
   return `
     <section class="tool-card glass dashboard-metric-panel">
       <div class="section-title compact-section-title">
         <div>
-          <h2>${escapeHtml(getGovernanceDashboardMetricLabel(metric))}</h2>
-          <p class="hint">按检查任务导入时间从早到晚展示，共 ${hazards.length} 条。此处只展开清单，不跳转页面。</p>
+          <h2>${escapeHtml(title)}</h2>
+          <p class="hint">${escapeHtml(getGovernanceDashboardMetricLabel(metric))}｜按检查任务展示，共 ${filteredHazards.length} 条。逾期项优先显示，便于发给责任部门催办。</p>
+        </div>
+        <div class="dashboard-metric-actions">
+          <select id="dashboardDeptFilter" class="select small-select" aria-label="选择责任部门">
+            <option value="">全部责任部门</option>
+            ${departmentOptions.map((dept) => `<option value="${escapeAttr(dept)}" ${governanceState.dashboardDeptFilter === dept ? "selected" : ""}>${escapeHtml(dept)}</option>`).join("")}
+          </select>
+          <button id="exportDashboardMetricButton" class="button primary" type="button">导出表格</button>
         </div>
       </div>
       ${groups.length ? groups.map(renderGovernanceDashboardMetricGroup).join("") : `<div class="empty-state soft"><p>暂无对应隐患。</p></div>`}
     </section>
   `;
+}
+
+function getGovernanceDashboardDepartments(hazards) {
+  return [...new Set(hazards.map((hazard) => hazard.responsibleDept || "未填写").filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+}
+
+function filterGovernanceDashboardMetricByDept(hazards) {
+  const dept = governanceState.dashboardDeptFilter;
+  if (!dept) return hazards;
+  return hazards.filter((hazard) => (hazard.responsibleDept || "未填写") === dept);
+}
+
+function buildGovernanceDashboardMetricExportTitle() {
+  const dept = governanceState.dashboardDeptFilter || "全部责任部门";
+  return `${dept}未完成整改隐患情况一览表`;
 }
 
 function groupGovernanceHazardsByInspectionForDashboard(hazards) {
@@ -3701,6 +3833,9 @@ function groupGovernanceHazardsByInspectionForDashboard(hazards) {
     }
     groups.get(key).hazards.push(hazard);
   });
+  groups.forEach((group) => {
+    group.hazards.sort(compareGovernanceDashboardHazards);
+  });
   return Array.from(groups.values()).sort((a, b) => {
     const aTime = a.inspection?.createdAt || a.hazards[0]?.createdAt || "";
     const bTime = b.inspection?.createdAt || b.hazards[0]?.createdAt || "";
@@ -3710,7 +3845,7 @@ function groupGovernanceHazardsByInspectionForDashboard(hazards) {
 
 function renderGovernanceDashboardMetricGroup(group) {
   const title = group.inspection
-    ? `${group.inspection.checkNo} ${group.inspection.checkName || "未命名检查"}`
+    ? `${group.inspection.checkNo}｜${formatGovernanceInspectionDateRange(group.inspection)}｜${group.inspection.checkName || "未命名检查"}`
     : group.checkNo;
   return `
     <details class="dashboard-hazard-group" open>
@@ -3728,6 +3863,7 @@ function renderGovernanceDashboardMetricGroup(group) {
             <col class="dashboard-col-person">
             <col class="dashboard-col-deadline">
             <col class="dashboard-col-status">
+            <col class="dashboard-col-remark">
           </colgroup>
           <thead>
             <tr>
@@ -3737,7 +3873,8 @@ function renderGovernanceDashboardMetricGroup(group) {
               <th>责任部门</th>
               <th>责任人</th>
               <th>整改期限</th>
-              <th>状态</th>
+              <th>整改状态</th>
+              <th>备注</th>
             </tr>
           </thead>
           <tbody>
@@ -3755,7 +3892,8 @@ function renderGovernanceDashboardMetricGroup(group) {
                 <td>${escapeHtml(hazard.responsibleDept || "未填写")}</td>
                 <td>${escapeHtml(hazard.responsiblePerson || "未填写")}</td>
                 <td>${escapeHtml(getGovernanceDisplayDeadline(hazard) || "未填写")}</td>
-                <td><span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus || "")}</span></td>
+                <td><span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus || hazard.currentStatus || "")}</span></td>
+                <td>${escapeHtml(getGovernanceDashboardReminderRemark(hazard))}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -3763,6 +3901,198 @@ function renderGovernanceDashboardMetricGroup(group) {
       </div>
     </details>
   `;
+}
+
+function compareGovernanceDashboardHazards(a, b) {
+  const aMeta = getGovernanceDashboardStatusMeta(a);
+  const bMeta = getGovernanceDashboardStatusMeta(b);
+  const aDeadline = parseGovernanceDateInput(getGovernanceDisplayDeadline(a)) || "9999-12-31";
+  const bDeadline = parseGovernanceDateInput(getGovernanceDisplayDeadline(b)) || "9999-12-31";
+  return aMeta.priority - bMeta.priority
+    || aDeadline.localeCompare(bDeadline)
+    || String(a.hazardNo || "").localeCompare(String(b.hazardNo || ""), "zh-Hans-CN");
+}
+
+function getGovernanceDashboardStatusMeta(hazard) {
+  if (hazard.autoStatus === "已逾期") {
+    return {
+      label: "已逾期",
+      priority: 0,
+      fill: "FFFFC7CE",
+      font: "FF9F1239"
+    };
+  }
+  if (hazard.currentStatus === "延期整改" || hazard.autoStatus === "延期整改") {
+    return {
+      label: "延期整改",
+      priority: 1,
+      fill: "FFFFE4C7",
+      font: "FF9A3412"
+    };
+  }
+  if (hazard.autoStatus === "已整改" && hazard.platformCloseStatus !== "已上传闭环") {
+    return {
+      label: "平台未闭环",
+      priority: 3,
+      fill: "FFE2E8F0",
+      font: "FF334155"
+    };
+  }
+  return {
+    label: "尚未到期",
+    priority: 2,
+    fill: "FFDCEBFF",
+    font: "FF1D4ED8"
+  };
+}
+
+function getGovernanceDashboardReminderRemark(hazard) {
+  if (hazard.autoStatus === "已逾期") return "请尽快组织整改并反馈整改情况";
+  if (hazard.currentStatus === "延期整改" || hazard.autoStatus === "延期整改") {
+    const deadline = hazard.extensionDeadline ? `，延期后期限：${hazard.extensionDeadline}` : "";
+    return `${hazard.extensionReason || "已申请延期整改"}${deadline}`;
+  }
+  if (hazard.autoStatus === "已整改" && hazard.platformCloseStatus !== "已上传闭环") {
+    return "已整改，待上传平台闭环";
+  }
+  return "";
+}
+
+async function exportGovernanceDashboardMetricTable(metric) {
+  const currentMetric = metric || governanceState.dashboardMetric || "unfinished";
+  const hazards = filterGovernanceDashboardMetricByDept(getGovernanceDashboardMetricHazards(currentMetric));
+  if (!hazards.length) {
+    showToast("没有可导出的隐患");
+    return;
+  }
+  if (!window.ExcelJS) {
+    showToast("Excel 组件未加载，请刷新页面后重试");
+    return;
+  }
+
+  try {
+    showToast("正在生成督办表...");
+    const workbook = new window.ExcelJS.Workbook();
+    workbook.creator = "安防环保部隐患排查治理工作台";
+    workbook.created = new Date();
+    workbook.modified = new Date();
+    const sheet = workbook.addWorksheet("未完成整改情况");
+    sheet.columns = [
+      { width: 7 },
+      { width: 24 },
+      { width: 42 },
+      { width: 34 },
+      { width: 18 },
+      { width: 14 },
+      { width: 14 },
+      { width: 14 },
+      { width: 28 }
+    ];
+    sheet.pageSetup = {
+      paperSize: 9,
+      orientation: "landscape",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      margins: { left: 0.35, right: 0.35, top: 0.55, bottom: 0.55, header: 0.25, footer: 0.25 }
+    };
+    const title = buildGovernanceDashboardMetricExportTitle();
+    sheet.mergeCells("A1:I1");
+    const titleCell = sheet.getCell("A1");
+    titleCell.value = title;
+    titleCell.font = { name: "宋体", size: 16, bold: true };
+    titleCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(1).height = 30;
+
+    sheet.mergeCells("A2:I2");
+    const metaCell = sheet.getCell("A2");
+    metaCell.value = `统计口径：${getGovernanceDashboardMetricLabel(currentMetric)}｜共${hazards.length}项｜导出时间：${formatDateTime(new Date())}`;
+    metaCell.font = { name: "宋体", size: 10, color: { argb: "FF475569" } };
+    metaCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(2).height = 22;
+
+    let rowNumber = 3;
+    let sequence = 1;
+    const groups = groupGovernanceHazardsByInspectionForDashboard(hazards);
+    groups.forEach((group) => {
+      sheet.mergeCells(`A${rowNumber}:I${rowNumber}`);
+      const groupCell = sheet.getCell(rowNumber, 1);
+      groupCell.value = group.inspection
+        ? `${group.inspection.checkNo} ${formatGovernanceInspectionDateRange(group.inspection)} ${group.inspection.checkName || "未命名检查"}`
+        : `${group.checkNo} ${group.hazards[0]?.checkDate || ""}`;
+      groupCell.font = { name: "宋体", size: 11, bold: true };
+      groupCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEAF3FF" } };
+      groupCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+      applyGovernanceDashboardExportBorder(sheet, rowNumber);
+      sheet.getRow(rowNumber).height = 24;
+      rowNumber += 1;
+
+      const headerRow = sheet.getRow(rowNumber);
+      headerRow.values = ["序号", "隐患编号", "问题隐患", "整改措施", "责任部门", "责任人", "整改期限", "整改状态", "备注"];
+      headerRow.height = 24;
+      headerRow.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font = { name: "宋体", size: 10, bold: true };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        cell.border = getGovernanceDashboardExportBorder();
+      });
+      rowNumber += 1;
+
+      group.hazards.forEach((hazard) => {
+        const statusMeta = getGovernanceDashboardStatusMeta(hazard);
+        const row = sheet.getRow(rowNumber);
+        row.values = [
+          sequence,
+          hazard.hazardNo || "",
+          hazard.problem || "",
+          hazard.rectificationMeasures || "",
+          hazard.responsibleDept || "未填写",
+          hazard.responsiblePerson || "未填写",
+          getGovernanceDisplayDeadline(hazard) || "未填写",
+          statusMeta.label,
+          getGovernanceDashboardReminderRemark(hazard)
+        ];
+        row.height = Math.min(92, Math.max(28, Math.ceil(Math.max(String(hazard.problem || "").length / 26, String(hazard.rectificationMeasures || "").length / 22, 1)) * 15));
+        row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+          cell.font = { name: "宋体", size: 10 };
+          cell.alignment = {
+            horizontal: [1, 5, 6, 7, 8].includes(columnNumber) ? "center" : "left",
+            vertical: "middle",
+            wrapText: true
+          };
+          cell.border = getGovernanceDashboardExportBorder();
+        });
+        const statusCell = row.getCell(8);
+        statusCell.font = { name: "宋体", size: 10, bold: true, color: { argb: statusMeta.font } };
+        statusCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: statusMeta.fill } };
+        sequence += 1;
+        rowNumber += 1;
+      });
+    });
+    sheet.views = [{ state: "frozen", ySplit: 2 }];
+    const buffer = await workbook.xlsx.writeBuffer();
+    downloadBlob(`${safeFilePart(title)}_${getTodayDate().replace(/-/g, "")}.xlsx`, new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }));
+    showToast("督办表已导出");
+  } catch (error) {
+    showToast(error.message || "督办表导出失败");
+  }
+}
+
+function applyGovernanceDashboardExportBorder(sheet, rowNumber) {
+  for (let column = 1; column <= 9; column += 1) {
+    sheet.getCell(rowNumber, column).border = getGovernanceDashboardExportBorder();
+  }
+}
+
+function getGovernanceDashboardExportBorder() {
+  return {
+    top: { style: "thin" },
+    left: { style: "thin" },
+    bottom: { style: "thin" },
+    right: { style: "thin" }
+  };
 }
 
 function renderGovernanceGroupList(groups, emptyText) {
@@ -4324,7 +4654,7 @@ function renderGovernanceImportHazardRow(entry, index, showAssignment) {
   `;
 }
 
-function renderGovernanceFilters({ includeKeyword = true } = {}) {
+function renderGovernanceFilters({ includeKeyword = true, includeClassification = true } = {}) {
   const options = governanceState.data.settings;
   const inspectionOptions = governanceState.data.inspections.map((item) => `<option value="${escapeAttr(item.checkNo)}" ${governanceState.ledgerFilters.checkNo === item.checkNo ? "selected" : ""}>${escapeHtml(item.checkNo)} ${escapeHtml(item.checkName)}</option>`).join("");
   const professionalOptions = governanceState.ledgerFilters.hazardType
@@ -4350,8 +4680,10 @@ function renderGovernanceFilters({ includeKeyword = true } = {}) {
       <select class="select" data-filter="currentStatus"><option value="">全部手动状态</option>${options.statuses.map((name) => `<option ${governanceState.ledgerFilters.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="autoStatus"><option value="">全部自动状态</option>${["整改中", "已整改", "延期整改", "已逾期"].map((name) => `<option ${governanceState.ledgerFilters.autoStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
       <select class="select" data-filter="hazardLevel"><option value="">全部隐患等级</option>${options.hazardLevels.map((name) => `<option ${governanceState.ledgerFilters.hazardLevel === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
-      <select class="select" data-filter="hazardType"><option value="">全部问题分类</option>${Object.keys(options.hazardTypes).map((name) => `<option ${governanceState.ledgerFilters.hazardType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
-      <select class="select" data-filter="professionalType"><option value="">全部专业类型</option>${professionalOptions.map((name) => `<option ${governanceState.ledgerFilters.professionalType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
+      ${includeClassification ? `
+        <select class="select" data-filter="hazardType"><option value="">全部问题分类</option>${Object.keys(options.hazardTypes).map((name) => `<option ${governanceState.ledgerFilters.hazardType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
+        <select class="select" data-filter="professionalType"><option value="">全部专业类型</option>${professionalOptions.map((name) => `<option ${governanceState.ledgerFilters.professionalType === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select>
+      ` : ""}
     </div>
   `;
 }
@@ -5143,8 +5475,12 @@ function bindGovernanceLegacyCardEvents(content) {
 }
 
 function renderGovernanceRectificationPage(content) {
-  const hazards = getFilteredGovernanceHazards();
   const isStandaloneFeedback = governanceState.dataScope === "rectificationFeedback";
+  if (isStandaloneFeedback) {
+    governanceState.ledgerFilters.hazardType = "";
+    governanceState.ledgerFilters.professionalType = "";
+  }
+  const hazards = getFilteredGovernanceHazards();
   content.innerHTML = `
     <section class="tool-card glass">
       <div class="section-title">
@@ -5157,7 +5493,7 @@ function renderGovernanceRectificationPage(content) {
           <button id="goLedgerFromRectificationButton" class="button" type="button">${isStandaloneFeedback ? "刷新整改任务" : "查看总台账"}</button>
         </div>
       </div>
-      ${renderGovernanceFilters({ includeKeyword: false })}
+      ${renderGovernanceFilters({ includeKeyword: false, includeClassification: !isStandaloneFeedback })}
     </section>
     <section class="governance-ledger-list">
       ${hazards.map((hazard, index) => renderGovernanceRectificationCard(hazard, index)).join("") || `<div class="empty-state glass"><h3>暂无符合条件的隐患</h3><p>可以调整筛选条件。</p></div>`}
@@ -5168,30 +5504,57 @@ function renderGovernanceRectificationPage(content) {
 
 function renderGovernanceRectificationCard(hazard, index) {
   const settings = governanceState.data.settings;
+  const statusText = hazard.autoStatus || hazard.currentStatus || "整改中";
+  const isExtension = isGovernanceExtensionHazard(hazard);
+  const deadlineText = getGovernanceDisplayDeadline(hazard) || "未填写";
+  const handlingInputId = `rectHandling-${hazard.id}`;
   return `
     <article class="tool-card glass rectification-ledger-card" data-hazard-id="${escapeAttr(hazard.id)}">
       <details class="rectification-collapse">
         <summary class="rectification-card-head">
-          <div>
-            <span class="hazard-summary-index">${index + 1}</span>
-            <strong>${escapeHtml(hazard.hazardNo || "未编号")}</strong>
+          <div class="rectification-card-summary">
+            <div class="rectification-summary-line">
+              <span class="hazard-summary-index">${index + 1}</span>
+              <span class="status-pill ${getGovernanceStatusClass(statusText)}">${escapeHtml(statusText)}</span>
+              <span class="rectification-deadline-chip">${isExtension ? "延期时限" : "整改时限"}：${escapeHtml(deadlineText)}</span>
+            </div>
             <p>${escapeHtml(hazard.problem || "未填写隐患")}</p>
-            <small>${escapeHtml(hazard.checkPlace || "未填写地点")}｜${escapeHtml(hazard.responsibleDept || "未分配")}｜${escapeHtml(hazard.deadline || "未填写期限")}</small>
           </div>
-          <span class="status-pill ${getGovernanceStatusClass(hazard.autoStatus)}">${escapeHtml(hazard.autoStatus)}</span>
         </summary>
-        <div class="governance-detail-grid rectification-editor-grid">
-          <label class="field"><span>整改状态</span><select class="select rect-current-status">${settings.statuses.map((name) => `<option ${hazard.currentStatus === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}</select></label>
-          <label class="field"><span>验收人</span><input class="input rect-acceptor" value="${escapeAttr(hazard.acceptor || "")}"></label>
-          <label class="field"><span>延期后期限</span><input class="input rect-extension-deadline" type="date" value="${escapeAttr(hazard.extensionDeadline || "")}"></label>
-          <label class="field span-2"><span>处理措施 / 完成情况</span><textarea class="textarea small-textarea rect-handling">${escapeHtml(hazard.handlingMeasures || "")}</textarea></label>
-          <label class="field span-2"><span>延期原因</span><input class="input rect-extension-reason" value="${escapeAttr(hazard.extensionReason || "")}"></label>
-          <label class="field span-2"><span>整改后照片</span><input class="input rect-after-photos" type="file" accept="image/*" multiple></label>
+        <div class="rectification-expanded-body">
+          <p class="rectification-measure-note"><b>整改措施：</b>${escapeHtml(hazard.rectificationMeasures || "未填写整改措施")}</p>
+          <div class="rectification-status-row">
+            <span>整改状态</span>
+            <input class="rect-current-status" type="hidden" value="${escapeAttr(hazard.currentStatus || "整改中")}">
+            <div class="rectification-status-buttons">
+              ${settings.statuses.map((name) => `<button class="status-choice ${hazard.currentStatus === name ? "active" : ""}" type="button" data-action="set-rect-status" data-status="${escapeAttr(name)}">${escapeHtml(name)}</button>`).join("")}
+            </div>
+          </div>
+          <input class="rect-acceptor" type="hidden" value="${escapeAttr(hazard.acceptor || "")}">
+          <label class="field rectification-text-field">
+            <span>处理措施 / 完成情况</span>
+            <div class="voice-textarea-wrap">
+              <textarea id="${escapeAttr(handlingInputId)}" class="textarea small-textarea rect-handling" placeholder="填写实际整改完成情况">${escapeHtml(hazard.handlingMeasures || "")}</textarea>
+              <button class="button voice-button rect-voice-button" type="button" data-action="voice-handling" data-voice-target="${escapeAttr(handlingInputId)}">语音输入</button>
+            </div>
+          </label>
+          <label class="field rectification-photo-field">
+            <span>整改后照片</span>
+            <input class="input rect-after-photos" type="file" accept="image/*" capture="environment" multiple>
+          </label>
+          <div class="photo-strip">
+            ${(hazard.afterPhotos || []).slice(0, 4).map((photo) => `<img src="${escapeAttr(photo.dataUrl || photo.watermarkedDataUrl || "")}" alt="整改后照片">`).join("") || `<span class="hint">暂无整改后照片</span>`}
+          </div>
+          <label class="field rectification-extension-row">
+            <span>延期后期限</span>
+            <input class="input rect-extension-deadline" type="date" value="${escapeAttr(hazard.extensionDeadline || "")}">
+          </label>
+          <label class="field">
+            <span>延期原因</span>
+            <input class="input rect-extension-reason" value="${escapeAttr(hazard.extensionReason || "")}" placeholder="无需延期可不填">
+          </label>
         </div>
-        <div class="photo-strip">
-          ${(hazard.afterPhotos || []).slice(0, 4).map((photo) => `<img src="${escapeAttr(photo.dataUrl || photo.watermarkedDataUrl || "")}" alt="整改后照片">`).join("") || `<span class="hint">暂无整改后照片</span>`}
-        </div>
-        <div class="actions">
+        <div class="actions rectification-card-actions">
           <button class="button primary" type="button" data-action="save-rectification">保存整改</button>
           <button class="button" type="button" data-action="edit-hazard">编辑隐患基础信息</button>
         </div>
@@ -5237,7 +5600,25 @@ function bindGovernanceRectificationEvents(content) {
         governanceState.editingHazardId = hazardId;
         governanceState.activeTab = "hazardEntry";
         governanceState.workflowFocus = "capture";
-        renderHazardGovernanceModule();
+        if (governanceState.dataScope === "rectificationFeedback") {
+          governanceState.hazardEntryMode = "single";
+          renderGovernanceActiveTab();
+        } else {
+          renderHazardGovernanceModule();
+        }
+        return;
+      }
+      if (button.dataset.action === "set-rect-status") {
+        const status = button.dataset.status || "整改中";
+        card.querySelector(".rect-current-status").value = status;
+        card.querySelectorAll(".status-choice").forEach((item) => item.classList.toggle("active", item === button));
+        if (status === "延期整改") {
+          card.querySelector(".rect-extension-deadline")?.focus();
+        }
+        return;
+      }
+      if (button.dataset.action === "voice-handling") {
+        startVoiceInput(button.dataset.voiceTarget, button);
         return;
       }
       if (button.dataset.action === "save-rectification") {
@@ -9919,6 +10300,899 @@ function exportCsv(rows, fileName) {
     ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? "").replace(/"/g, '""')}"`).join(","))
   ];
   downloadTextFile(fileName, `\uFEFF${lines.join("\n")}`, "text/csv;charset=utf-8");
+}
+
+async function renderBusinessNetAssistant() {
+  app.innerHTML = `<section class="tool-card glass"><h2>商网整改项办理助手</h2><p class="hint">正在读取本地办理队列...</p></section>`;
+  businessNetState.data = await loadBusinessNetData();
+  ensureBusinessNetSelection();
+  bindBusinessNetShortcuts();
+
+  const stats = getBusinessNetStats();
+  app.innerHTML = `
+    <div class="tool-layout business-net-module">
+      <section class="tool-card glass business-net-hero">
+        <div class="section-title">
+          <div>
+            <span class="eyebrow">上级检查整改项流程辅助</span>
+            <h2>商网整改项办理助手</h2>
+            <p class="hint">不保存账号密码、不绕过登录和验证码，只用于本地队列、文本复制、报告匹配、状态记录和人工确认后的重复流程管理。</p>
+          </div>
+          <div class="actions">
+            <button id="swImportButton" class="button primary" type="button">导入清单</button>
+            <button id="swMatchFolderButton" class="button" type="button">选择整改报告文件夹</button>
+            <button id="swBackupButton" class="button" type="button">导出全量备份</button>
+            <input id="swImportInput" class="hidden" type="file" accept=".xlsx,.xls,.csv,.json,application/json,text/csv" multiple>
+            <input id="swReportFolderInput" class="hidden" type="file" webkitdirectory multiple>
+          </div>
+        </div>
+        ${renderBusinessNetStats(stats)}
+      </section>
+
+      <section class="tool-card glass business-net-toolbar">
+        <div class="business-net-filter-row">
+          <input id="swKeyword" class="input" type="search" value="${escapeAttr(businessNetState.keyword)}" placeholder="搜索隐患编号、内容、责任单位或备注">
+          <select id="swStageFilter" class="select">
+            <option value="">全部阶段</option>
+            ${BUSINESS_NET_STAGES.map((stage) => `<option value="${stage.key}" ${businessNetState.stageFilter === stage.key ? "selected" : ""}>${stage.title}</option>`).join("")}
+            <option value="exception" ${businessNetState.stageFilter === "exception" ? "selected" : ""}>异常项</option>
+          </select>
+          <select id="swActiveStage" class="select">
+            ${BUSINESS_NET_STAGES.map((stage) => `<option value="${stage.key}" ${businessNetState.activeStage === stage.key ? "selected" : ""}>当前办理：${stage.title}</option>`).join("")}
+          </select>
+        </div>
+        <div class="business-net-export-row">
+          <button class="button ghost" type="button" data-sw-export="progress">导出办理进度表</button>
+          <button class="button ghost" type="button" data-sw-export="send">未发送清单</button>
+          <button class="button ghost" type="button" data-sw-export="accept">未承办清单</button>
+          <button class="button ghost" type="button" data-sw-export="upload">未上传清单</button>
+          <button class="button ghost" type="button" data-sw-export="audit">未审核清单</button>
+          <button class="button ghost" type="button" data-sw-export="exception">异常清单</button>
+          <button class="button ghost" type="button" data-sw-export="logs">导出操作日志</button>
+        </div>
+        <div class="business-net-batch-row">
+          <span class="hint">批量状态更新</span>
+          <select id="swBatchStage" class="select small-select">${BUSINESS_NET_STAGES.map((stage) => `<option value="${stage.key}">${stage.title}</option>`).join("")}</select>
+          <select id="swBatchStatus" class="select small-select"></select>
+          <button id="swApplyBatchButton" class="button" type="button">应用到筛选结果</button>
+          <button id="swClearButton" class="button danger" type="button">清空助手数据</button>
+        </div>
+      </section>
+
+      <section class="business-net-board">
+        <aside class="tool-card glass business-net-list">
+          <div class="section-title compact-title">
+            <div>
+              <h3>隐患任务列表</h3>
+              <p class="hint">共 ${getFilteredBusinessNetTasks().length} 条筛选结果</p>
+            </div>
+          </div>
+          <div class="business-net-task-list">${renderBusinessNetTaskList()}</div>
+        </aside>
+        <section class="tool-card glass business-net-detail">${renderBusinessNetDetail()}</section>
+        <aside class="tool-card glass business-net-actions-panel">${renderBusinessNetOperationPanel()}</aside>
+      </section>
+
+      <section class="business-net-bottom-grid">
+        <section class="tool-card glass">${renderBusinessNetTemplates()}</section>
+        <section class="tool-card glass">${renderBusinessNetRpaPanel()}</section>
+        <section class="tool-card glass">${renderBusinessNetLogPanel()}</section>
+      </section>
+    </div>
+  `;
+
+  bindBusinessNetEvents();
+}
+
+async function loadBusinessNetData() {
+  const stored = await readDbRecord(BUSINESS_NET_RECORD_KEY);
+  return normalizeBusinessNetData(stored || createEmptyBusinessNetData());
+}
+
+async function saveBusinessNetData() {
+  if (!businessNetState.data) return;
+  businessNetState.data.updatedAt = new Date().toISOString();
+  await writeDbRecord(BUSINESS_NET_RECORD_KEY, businessNetState.data);
+}
+
+function createEmptyBusinessNetData() {
+  return {
+    schemaVersion: "business-net-assistant-v1",
+    tasks: [],
+    templates: { ...BUSINESS_NET_DEFAULT_TEMPLATES },
+    logs: [],
+    rpa: { enabled: false, delayMs: 900, retryCount: 1 },
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeBusinessNetData(data) {
+  const defaults = createEmptyBusinessNetData();
+  const source = data && typeof data === "object" ? data : {};
+  return {
+    schemaVersion: "business-net-assistant-v1",
+    tasks: Array.isArray(source.tasks) ? source.tasks.map(normalizeBusinessNetTask) : [],
+    templates: { ...BUSINESS_NET_DEFAULT_TEMPLATES, ...(source.templates || {}) },
+    logs: Array.isArray(source.logs) ? source.logs.map(normalizeBusinessNetLog) : [],
+    rpa: { ...defaults.rpa, ...(source.rpa || {}) },
+    updatedAt: source.updatedAt || new Date().toISOString()
+  };
+}
+
+function normalizeBusinessNetTask(item = {}) {
+  const templates = businessNetState.data?.templates || BUSINESS_NET_DEFAULT_TEMPLATES;
+  const seq = String(item.hazardSeq || item.seq || item["隐患序号"] || "").trim();
+  const hazardNo = String(item.hazardNo || item["隐患编号"] || "").trim();
+  return {
+    id: item.id || createId(),
+    checkNo: String(item.checkNo || item["检查编号"] || "").trim(),
+    hazardNo,
+    hazardSeq: seq,
+    problem: String(item.problem || item.hazardContent || item["隐患内容"] || item["问题隐患"] || "").trim(),
+    rectificationMeasures: String(item.rectificationMeasures || item.measure || item["整改措施"] || "").trim(),
+    responsibleDept: String(item.responsibleDept || item["整改责任单位"] || item["责任单位"] || item["责任部门"] || "").trim(),
+    responsiblePerson: String(item.responsiblePerson || item["整改责任人"] || item["责任人"] || "").trim(),
+    deadline: parseGovernanceDateInput(item.deadline || item["整改期限"] || "") || String(item.deadline || item["整改期限"] || "").trim(),
+    reportFilePath: String(item.reportFilePath || item["整改报告文件路径"] || item["整改报告文件"] || "").trim(),
+    reportFileName: String(item.reportFileName || item["整改报告文件名"] || "").trim(),
+    reportMatchStatus: item.reportMatchStatus || (item.reportFilePath || item.reportFileName ? "已匹配" : "未匹配"),
+    reportCandidates: Array.isArray(item.reportCandidates) ? item.reportCandidates : [],
+    progressFeedback: String(item.progressFeedback || item["进展反馈"] || templates.progressFeedback).trim(),
+    approvalOpinion: String(item.approvalOpinion || item["审批意见"] || templates.approvalOpinion).trim(),
+    acceptOpinion: String(item.acceptOpinion || item["承办意见"] || templates.acceptOpinion).trim(),
+    sendStatus: normalizeBusinessNetStatus(item.sendStatus || item["发送行动项状态"], "未发送", "已发送"),
+    acceptStatus: normalizeBusinessNetStatus(item.acceptStatus || item["承办状态"], "未承办", "已承办"),
+    uploadStatus: normalizeBusinessNetStatus(item.uploadStatus || item["整改报告上传状态"], "未上传", "已上传"),
+    auditStatus: normalizeBusinessNetStatus(item.auditStatus || item["审核状态"], "未审核", "已审核"),
+    currentStatus: item.currentStatus || item["商网当前状态"] || inferBusinessNetCurrentStatus(item),
+    remark: String(item.remark || item["备注"] || "").trim(),
+    updatedAt: item.updatedAt || new Date().toISOString()
+  };
+}
+
+function normalizeBusinessNetLog(item = {}) {
+  return {
+    id: item.id || createId(),
+    time: item.time || formatDateTime(new Date()),
+    hazardNo: item.hazardNo || "",
+    stage: item.stage || "",
+    result: item.result || "",
+    reason: item.reason || "",
+    remark: item.remark || ""
+  };
+}
+
+function normalizeBusinessNetStatus(value, pending, done) {
+  const text = String(value || "").trim();
+  if (text === done || text === "已完成") return done;
+  if (text === "异常") return "异常";
+  return pending;
+}
+
+function inferBusinessNetCurrentStatus(item = {}) {
+  if (item.auditStatus === "已审核") return "已闭环";
+  if (item.uploadStatus === "已上传") return "审核状态";
+  if (item.acceptStatus === "已承办") return "进展维护";
+  if (item.sendStatus === "已发送") return "待承办";
+  return "待发送行动项";
+}
+
+function getBusinessNetStats() {
+  const tasks = businessNetState.data?.tasks || [];
+  const count = (key, value) => tasks.filter((task) => task[key] === value).length;
+  const audited = count("auditStatus", "已审核");
+  return {
+    total: tasks.length,
+    sent: count("sendStatus", "已发送"),
+    accepted: count("acceptStatus", "已承办"),
+    uploaded: count("uploadStatus", "已上传"),
+    audited,
+    exception: tasks.filter(hasBusinessNetException).length,
+    percent: tasks.length ? Math.round((audited / tasks.length) * 100) : 0
+  };
+}
+
+function hasBusinessNetException(task) {
+  return BUSINESS_NET_STAGES.some((stage) => task[stage.statusKey] === "异常");
+}
+
+function renderBusinessNetStats(stats) {
+  return `<div class="business-net-stats">${[
+    ["隐患总数", stats.total],
+    ["已发送行动项", stats.sent],
+    ["已承办", stats.accepted],
+    ["已上传整改报告", stats.uploaded],
+    ["已审核闭环", stats.audited],
+    ["异常", stats.exception],
+    ["总体完成率", `${stats.percent}%`]
+  ].map(([label, value]) => `<div class="business-net-stat glass"><span>${label}</span><strong>${value}</strong></div>`).join("")}</div>`;
+}
+
+function getFilteredBusinessNetTasks() {
+  const keyword = businessNetState.keyword.toLowerCase();
+  const stage = businessNetState.stageFilter;
+  return (businessNetState.data?.tasks || []).filter((task) => {
+    const text = [task.checkNo, task.hazardNo, task.hazardSeq, task.problem, task.rectificationMeasures, task.responsibleDept, task.responsiblePerson, task.remark].join("\n").toLowerCase();
+    if (keyword && !text.includes(keyword)) return false;
+    if (stage === "exception") return hasBusinessNetException(task);
+    const stageConfig = getBusinessNetStage(stage);
+    if (stageConfig) return task[stageConfig.statusKey] !== stageConfig.done;
+    return true;
+  });
+}
+
+function renderBusinessNetTaskList() {
+  const tasks = getFilteredBusinessNetTasks();
+  if (!tasks.length) return `<div class="empty-state compact-empty"><h3>暂无匹配任务</h3><p>可以导入 Excel、CSV 或 JSON 后开始办理。</p></div>`;
+  return tasks.map((task) => `
+    <button class="business-net-task ${task.id === businessNetState.selectedTaskId ? "active" : ""}" type="button" data-sw-task-id="${escapeAttr(task.id)}">
+      <span class="business-net-task-seq">${escapeHtml(task.hazardSeq || "-")}</span>
+      <span class="business-net-task-main"><strong>${escapeHtml(task.hazardNo || "未编号")}</strong><em>${escapeHtml(summarizeText(task.problem, 42) || "未填写隐患内容")}</em></span>
+      <span class="status-pill ${hasBusinessNetException(task) ? "status-overdue" : "status-done"}">${escapeHtml(getBusinessNetTaskOverallStatus(task))}</span>
+      <span class="business-net-match ${task.reportMatchStatus === "已匹配" ? "matched" : task.reportMatchStatus === "多文件待确认" ? "warning" : "missing"}">${escapeHtml(task.reportMatchStatus || "未匹配")}</span>
+    </button>
+  `).join("");
+}
+
+function renderBusinessNetDetail() {
+  const task = getSelectedBusinessNetTask();
+  if (!task) return `<div class="empty-state compact-empty"><h3>请选择或导入一条隐患</h3><p>左侧选择任务后，可维护详情、复制文本并记录办理状态。</p></div>`;
+  return `
+    <div class="section-title compact-title"><div><h3>当前隐患详情</h3><p class="hint">${escapeHtml(task.checkNo || "未填写检查编号")}｜${escapeHtml(task.currentStatus || "待发送行动项")}</p></div><span class="status-pill ${hasBusinessNetException(task) ? "status-overdue" : "status-pending"}">${escapeHtml(getBusinessNetTaskOverallStatus(task))}</span></div>
+    <form id="swTaskForm" class="form-grid business-net-detail-form" data-sw-task-id="${escapeAttr(task.id)}">
+      <label class="field"><span>检查编号</span><input class="input" name="checkNo" value="${escapeAttr(task.checkNo)}"></label>
+      <label class="field"><span>隐患编号</span><input class="input" name="hazardNo" value="${escapeAttr(task.hazardNo)}"></label>
+      <label class="field"><span>隐患序号</span><input class="input" name="hazardSeq" value="${escapeAttr(task.hazardSeq)}"></label>
+      <label class="field"><span>整改责任单位</span><input class="input" name="responsibleDept" value="${escapeAttr(task.responsibleDept)}"></label>
+      <label class="field"><span>整改责任人</span><input class="input" name="responsiblePerson" value="${escapeAttr(task.responsiblePerson)}"></label>
+      <label class="field"><span>整改期限</span><input class="input" name="deadline" value="${escapeAttr(task.deadline)}"></label>
+      <label class="field span-2"><span>隐患内容</span><textarea class="textarea small-textarea" name="problem">${escapeHtml(task.problem)}</textarea></label>
+      <label class="field span-2"><span>整改措施</span><textarea class="textarea small-textarea" name="rectificationMeasures">${escapeHtml(task.rectificationMeasures)}</textarea></label>
+      <label class="field span-2"><span>整改报告文件</span><input class="input" name="reportFilePath" value="${escapeAttr(task.reportFilePath || task.reportFileName)}" placeholder="选择报告文件夹后自动匹配"></label>
+      ${renderBusinessNetCandidateSelect(task)}
+      <label class="field span-2"><span>进展反馈</span><textarea class="textarea small-textarea" name="progressFeedback">${escapeHtml(task.progressFeedback)}</textarea></label>
+      <label class="field span-2"><span>审批意见</span><textarea class="textarea small-textarea" name="approvalOpinion">${escapeHtml(task.approvalOpinion)}</textarea></label>
+      <label class="field span-2"><span>承办意见</span><textarea class="textarea small-textarea" name="acceptOpinion">${escapeHtml(task.acceptOpinion)}</textarea></label>
+      <label class="field span-2"><span>备注</span><textarea class="textarea small-textarea" name="remark">${escapeHtml(task.remark)}</textarea></label>
+      <div class="actions span-2"><button class="button primary" type="submit">保存详情</button><button id="swOpenReportButton" class="button" type="button">打开整改报告</button><button id="swCopyReportPathButton" class="button ghost" type="button">复制报告路径</button></div>
+    </form>
+  `;
+}
+
+function renderBusinessNetCandidateSelect(task) {
+  const candidates = Array.isArray(task.reportCandidates) ? task.reportCandidates : [];
+  if (candidates.length <= 1) return "";
+  return `<label class="field span-2"><span>多个报告文件，请确认</span><select id="swReportCandidateSelect" class="select">${candidates.map((candidate) => `<option value="${escapeAttr(candidate.path)}" ${(task.reportFilePath || task.reportFileName) === candidate.path ? "selected" : ""}>${escapeHtml(candidate.path)}</option>`).join("")}</select></label>`;
+}
+
+function renderBusinessNetOperationPanel() {
+  const task = getSelectedBusinessNetTask();
+  return `
+    <div class="section-title compact-title"><div><h3>办理操作区</h3><p class="hint">快捷键：Alt+1/2/3/4 切阶段，Alt+N 下一条，Ctrl+S 保存详情。</p></div></div>
+    <div class="business-net-stage-tabs">${BUSINESS_NET_STAGES.map((stage) => `<button class="small-button ${businessNetState.activeStage === stage.key ? "active" : ""}" type="button" data-sw-stage="${stage.key}">${stage.title}</button>`).join("")}</div>
+    <div class="business-net-operation-groups">${BUSINESS_NET_STAGES.map((stage) => renderBusinessNetOperationGroup(stage, task)).join("")}</div>
+  `;
+}
+
+function renderBusinessNetOperationGroup(stage, task) {
+  const disabled = task ? "" : "disabled";
+  return `
+    <section class="business-net-operation-group ${businessNetState.activeStage === stage.key ? "active" : ""}">
+      <h4>${escapeHtml(stage.title)}</h4>
+      <p class="hint">当前状态：${task ? escapeHtml(task[stage.statusKey]) : "未选择隐患"}</p>
+      <div class="business-net-button-grid">
+        ${stage.copyButtons.map(([field, label]) => `<button class="button ghost" type="button" data-sw-copy="${field}" ${disabled}>${label}</button>`).join("")}
+        ${stage.key === "upload" ? `<button class="button ghost" type="button" data-sw-open-report ${disabled}>打开整改报告</button>` : ""}
+        <button class="button primary" type="button" data-sw-mark="${stage.key}" data-sw-result="done" ${disabled}>标记${stage.done}</button>
+        <button class="button danger" type="button" data-sw-mark="${stage.key}" data-sw-result="exception" ${disabled}>标记异常</button>
+        <button class="button" type="button" data-sw-next="${stage.key}">${stage.nextButton}</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderBusinessNetTemplates() {
+  const templates = businessNetState.data?.templates || BUSINESS_NET_DEFAULT_TEMPLATES;
+  return `
+    <details class="business-net-templates" open>
+      <summary><strong>文本模板</strong><span class="hint">可自定义，复制按钮会使用这里的内容。</span></summary>
+      <form id="swTemplateForm" class="form-grid compact-form">
+        <label class="field span-2"><span>进展反馈默认模板</span><textarea class="textarea small-textarea" name="progressFeedback">${escapeHtml(templates.progressFeedback)}</textarea></label>
+        <label class="field span-2"><span>审批意见默认模板</span><textarea class="textarea small-textarea" name="approvalOpinion">${escapeHtml(templates.approvalOpinion)}</textarea></label>
+        <label class="field span-2"><span>承办意见默认模板</span><textarea class="textarea small-textarea" name="acceptOpinion">${escapeHtml(templates.acceptOpinion)}</textarea></label>
+        <button class="button primary" type="submit">保存模板</button>
+      </form>
+    </details>
+  `;
+}
+
+function renderBusinessNetRpaPanel() {
+  const rpa = businessNetState.data?.rpa || {};
+  return `
+    <details class="business-net-rpa">
+      <summary><strong>RPA 辅助模式</strong><span class="hint">默认关闭，仅做安全预留。</span></summary>
+      <div class="form-grid compact-form">
+        <label class="toggle-line"><input id="swRpaEnabled" type="checkbox" ${rpa.enabled ? "checked" : ""}> 启用 RPA 辅助模式</label>
+        <label class="field"><span>点击延迟（毫秒）</span><input id="swRpaDelay" class="input" type="number" min="300" step="100" value="${escapeAttr(rpa.delayMs || 900)}"></label>
+        <label class="field"><span>失败重试次数</span><input id="swRpaRetry" class="input" type="number" min="0" max="5" value="${escapeAttr(rpa.retryCount ?? 1)}"></label>
+        <div class="business-net-rpa-buttons">${BUSINESS_NET_STAGES.map((stage) => `<button class="button ghost" type="button" data-sw-rpa="${stage.key}">启动${stage.title}</button>`).join("")}<button class="button danger" type="button" data-sw-rpa-stop>停止/暂停</button></div>
+        <p class="hint">当前网页工具不能越权控制商网登录、验证码或异常页面。后续若接入桌面 RPA/浏览器插件，可沿用这里的队列和日志。</p>
+      </div>
+    </details>
+  `;
+}
+
+function renderBusinessNetLogPanel() {
+  const logs = (businessNetState.data?.logs || []).slice(-12).reverse();
+  return `
+    <details class="business-net-logs" open>
+      <summary><strong>操作日志</strong><span class="hint">最近 ${logs.length} 条</span></summary>
+      <div class="business-net-log-list">
+        ${logs.length ? logs.map((log) => `<div class="business-net-log-row"><span>${escapeHtml(log.time)}</span><strong>${escapeHtml(log.hazardNo || "-")}</strong><em>${escapeHtml(log.stage)}｜${escapeHtml(log.result)}</em><small>${escapeHtml(log.reason || log.remark || "")}</small></div>`).join("") : `<p class="hint">暂无操作日志。</p>`}
+      </div>
+    </details>
+  `;
+}
+
+function bindBusinessNetEvents() {
+  document.querySelector("#swImportButton")?.addEventListener("click", () => document.querySelector("#swImportInput")?.click());
+  document.querySelector("#swImportInput")?.addEventListener("change", importBusinessNetFiles);
+  document.querySelector("#swMatchFolderButton")?.addEventListener("click", () => document.querySelector("#swReportFolderInput")?.click());
+  document.querySelector("#swReportFolderInput")?.addEventListener("change", matchBusinessNetReportFolder);
+  document.querySelector("#swBackupButton")?.addEventListener("click", exportBusinessNetBackup);
+  document.querySelector("#swKeyword")?.addEventListener("input", (event) => { businessNetState.keyword = event.target.value.trim(); renderBusinessNetAssistant(); });
+  document.querySelector("#swStageFilter")?.addEventListener("change", (event) => { businessNetState.stageFilter = event.target.value; ensureBusinessNetSelection(); renderBusinessNetAssistant(); });
+  document.querySelector("#swActiveStage")?.addEventListener("change", (event) => { businessNetState.activeStage = event.target.value; renderBusinessNetAssistant(); });
+  document.querySelectorAll("[data-sw-export]").forEach((button) => button.addEventListener("click", () => exportBusinessNetList(button.dataset.swExport)));
+  document.querySelectorAll("[data-sw-task-id]").forEach((button) => button.addEventListener("click", () => { businessNetState.selectedTaskId = button.dataset.swTaskId; renderBusinessNetAssistant(); }));
+  document.querySelectorAll("[data-sw-stage]").forEach((button) => button.addEventListener("click", () => { businessNetState.activeStage = button.dataset.swStage; renderBusinessNetAssistant(); }));
+  document.querySelectorAll("[data-sw-copy]").forEach((button) => button.addEventListener("click", () => copyBusinessNetField(button.dataset.swCopy)));
+  document.querySelectorAll("[data-sw-mark]").forEach((button) => button.addEventListener("click", () => markBusinessNetStage(button.dataset.swMark, button.dataset.swResult)));
+  document.querySelectorAll("[data-sw-next]").forEach((button) => button.addEventListener("click", () => selectNextBusinessNetTask(button.dataset.swNext)));
+  document.querySelectorAll("[data-sw-open-report], #swOpenReportButton").forEach((button) => button.addEventListener("click", openSelectedBusinessNetReport));
+  document.querySelector("#swCopyReportPathButton")?.addEventListener("click", copySelectedBusinessNetReportPath);
+  document.querySelector("#swTaskForm")?.addEventListener("submit", saveBusinessNetTaskForm);
+  document.querySelector("#swReportCandidateSelect")?.addEventListener("change", saveBusinessNetReportCandidate);
+  document.querySelector("#swTemplateForm")?.addEventListener("submit", saveBusinessNetTemplates);
+  document.querySelector("#swBatchStage")?.addEventListener("change", syncBusinessNetBatchStatusOptions);
+  document.querySelector("#swApplyBatchButton")?.addEventListener("click", applyBusinessNetBatchStatus);
+  document.querySelector("#swClearButton")?.addEventListener("click", clearBusinessNetData);
+  document.querySelector("#swRpaEnabled")?.addEventListener("change", saveBusinessNetRpaSettings);
+  document.querySelector("#swRpaDelay")?.addEventListener("change", saveBusinessNetRpaSettings);
+  document.querySelector("#swRpaRetry")?.addEventListener("change", saveBusinessNetRpaSettings);
+  document.querySelectorAll("[data-sw-rpa]").forEach((button) => button.addEventListener("click", () => startBusinessNetRpaPlaceholder(button.dataset.swRpa)));
+  document.querySelector("[data-sw-rpa-stop]")?.addEventListener("click", logBusinessNetRpaStop);
+  syncBusinessNetBatchStatusOptions();
+}
+
+function bindBusinessNetShortcuts() {
+  if (businessNetState.shortcutsBound) return;
+  businessNetState.shortcutsBound = true;
+  document.addEventListener("keydown", (event) => {
+    if (state.currentTool !== "businessNetAssistant") return;
+    if (event.altKey && ["1", "2", "3", "4"].includes(event.key)) {
+      event.preventDefault();
+      businessNetState.activeStage = BUSINESS_NET_STAGES[Number(event.key) - 1].key;
+      renderBusinessNetAssistant();
+    }
+    if (event.altKey && event.key.toLowerCase() === "n") {
+      event.preventDefault();
+      selectNextBusinessNetTask(businessNetState.activeStage);
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      const form = document.querySelector("#swTaskForm");
+      if (form) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    }
+  });
+}
+
+async function importBusinessNetFiles(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (!files.length) return;
+  try {
+    const incoming = [];
+    for (const file of files) incoming.push(...await parseBusinessNetImportFile(file));
+    if (!incoming.length) {
+      showToast("未识别到可导入的隐患");
+      return;
+    }
+    const result = mergeBusinessNetTasks(incoming);
+    addBusinessNetLog("", "导入", "成功", `新增 ${result.created} 条，更新 ${result.updated} 条`);
+    await saveBusinessNetData();
+    ensureBusinessNetSelection();
+    showToast(`已导入 ${incoming.length} 条，新增 ${result.created} 条，更新 ${result.updated} 条`);
+    renderBusinessNetAssistant();
+  } catch (error) {
+    showToast(error.message || "导入失败");
+  }
+}
+
+async function parseBusinessNetImportFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".json")) {
+    const data = await readJsonFile(file);
+    const rows = Array.isArray(data) ? data : Array.isArray(data.tasks) ? data.tasks : Array.isArray(data.hazards) ? data.hazards : [];
+    return rows.map(normalizeBusinessNetTask);
+  }
+  if (name.endsWith(".csv")) return parseBusinessNetCsv(await readTextFile(file)).map(normalizeBusinessNetTask);
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    if (!window.XLSX) throw new Error("Excel 组件未加载，请刷新页面后重试");
+    const workbook = window.XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    return parseBusinessNetRows(window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true })).map(normalizeBusinessNetTask);
+  }
+  throw new Error(`不支持的文件：${file.name}`);
+}
+
+function parseBusinessNetRows(rows) {
+  const headerIndex = rows.findIndex((row) => (row || []).some((cell) => /隐患|整改|责任|检查编号/.test(governanceCellToText(cell))));
+  if (headerIndex < 0) return [];
+  const headers = rows[headerIndex].map(governanceCellToText);
+  return rows.slice(headerIndex + 1).map((row) => {
+    const item = {};
+    headers.forEach((header, index) => { if (header) item[header] = governanceCellToText(row[index]); });
+    return mapBusinessNetRow(item);
+  }).filter((item) => item.problem || item.hazardNo);
+}
+
+function mapBusinessNetRow(row) {
+  const get = (...names) => {
+    const key = Object.keys(row).find((item) => names.some((name) => item.includes(name)));
+    return key ? row[key] : "";
+  };
+  return {
+    checkNo: get("检查编号"),
+    hazardNo: get("隐患编号"),
+    hazardSeq: get("隐患序号", "序号"),
+    problem: get("隐患内容", "问题隐患", "隐患名称"),
+    rectificationMeasures: get("整改措施", "治理措施", "拟采取"),
+    responsibleDept: get("整改责任单位", "责任单位", "责任部门", "治理责任单位"),
+    responsiblePerson: get("整改责任人", "责任人", "治理责任人"),
+    deadline: parseGovernanceDateInput(get("整改期限", "治理时间", "期限")) || get("整改期限", "治理时间", "期限"),
+    reportFilePath: get("整改报告文件路径", "整改报告文件"),
+    progressFeedback: get("进展反馈"),
+    approvalOpinion: get("审批意见"),
+    sendStatus: get("发送行动项状态"),
+    acceptStatus: get("承办状态"),
+    uploadStatus: get("整改报告上传状态", "上传状态"),
+    auditStatus: get("审核状态"),
+    currentStatus: get("商网当前状态", "当前状态"),
+    remark: get("备注")
+  };
+}
+
+function parseBusinessNetCsv(text) {
+  return parseBusinessNetRows(parseCsvRows(text));
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+  const input = String(text || "").replace(/^\uFEFF/, "");
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    const next = input[index + 1];
+    if (quoted && char === '"' && next === '"') {
+      value += '"';
+      index += 1;
+    } else if (char === '"') quoted = !quoted;
+    else if (!quoted && char === ",") {
+      row.push(value);
+      value = "";
+    } else if (!quoted && (char === "\n" || char === "\r")) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(value);
+      rows.push(row);
+      row = [];
+      value = "";
+    } else value += char;
+  }
+  if (value || row.length) {
+    row.push(value);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function readTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsText(file, "utf-8");
+  });
+}
+
+function mergeBusinessNetTasks(incoming) {
+  const tasks = businessNetState.data.tasks;
+  let created = 0;
+  let updated = 0;
+  incoming.forEach((item) => {
+    const task = normalizeBusinessNetTask(item);
+    const index = tasks.findIndex((row) => (
+      (task.hazardNo && row.hazardNo === task.hazardNo)
+      || (!task.hazardNo && task.checkNo && task.hazardSeq && row.checkNo === task.checkNo && row.hazardSeq === task.hazardSeq)
+    ));
+    if (index >= 0) {
+      tasks[index] = normalizeBusinessNetTask({ ...tasks[index], ...task, id: tasks[index].id });
+      updated += 1;
+    } else {
+      tasks.push(task);
+      created += 1;
+    }
+  });
+  return { created, updated };
+}
+
+async function matchBusinessNetReportFolder(event) {
+  const files = Array.from(event.target.files || []).filter(isBusinessNetReportFile);
+  event.target.value = "";
+  if (!files.length) {
+    showToast("未选择可匹配的整改报告文件");
+    return;
+  }
+  businessNetState.reportFileRegistry = new Map();
+  businessNetState.reportFolderName = files[0].webkitRelativePath?.split("/")[0] || "已选择文件夹";
+  files.forEach((file) => {
+    const path = file.webkitRelativePath || file.name;
+    businessNetState.reportFileRegistry.set(path, file);
+    businessNetState.reportFileRegistry.set(file.name, file);
+  });
+  const result = matchBusinessNetReports(files);
+  await saveBusinessNetData();
+  showToast(`报告匹配完成：已匹配 ${result.matched} 条，多文件 ${result.multiple} 条，未匹配 ${result.missing} 条`);
+  renderBusinessNetAssistant();
+}
+
+function isBusinessNetReportFile(file) {
+  const lower = file.name.toLowerCase();
+  return BUSINESS_NET_ALLOWED_FILE_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+function matchBusinessNetReports(files) {
+  let matched = 0;
+  let multiple = 0;
+  let missing = 0;
+  businessNetState.data.tasks = businessNetState.data.tasks.map((task) => {
+    const candidates = findBusinessNetReportCandidates(task, files);
+    if (!candidates.length) {
+      missing += 1;
+      return { ...task, reportMatchStatus: "未匹配", reportCandidates: [] };
+    }
+    if (candidates.length > 1) multiple += 1;
+    else matched += 1;
+    const selected = candidates[0];
+    return { ...task, reportFileName: selected.name, reportFilePath: selected.path, reportMatchStatus: candidates.length > 1 ? "多文件待确认" : "已匹配", reportCandidates: candidates };
+  });
+  return { matched, multiple, missing };
+}
+
+function findBusinessNetReportCandidates(task, files) {
+  const hazardNo = normalizeBusinessNetMatchText(task.hazardNo);
+  const seq = normalizeBusinessNetMatchText(task.hazardSeq).replace(/^0+/, "");
+  const byHazardNo = hazardNo ? files.filter((file) => normalizeBusinessNetMatchText(file.name).includes(hazardNo)) : [];
+  const source = byHazardNo.length ? byHazardNo : (seq ? files.filter((file) => {
+    const name = normalizeBusinessNetMatchText(file.name);
+    return name.includes(`-${seq}`) || name.includes(`_${seq}`) || name.includes(`第${seq}`) || name.includes(seq.padStart(3, "0"));
+  }) : []);
+  return source.map((file) => ({ name: file.name, path: file.webkitRelativePath || file.name }));
+}
+
+function normalizeBusinessNetMatchText(value) {
+  return String(value || "").toLowerCase().replace(/\s+/g, "").replace(/[()（）【】\[\]]/g, "");
+}
+
+function saveBusinessNetTaskForm(event) {
+  event.preventDefault();
+  const task = getSelectedBusinessNetTask();
+  if (!task) return;
+  const formData = new FormData(event.target);
+  updateBusinessNetTask(task.id, {
+    checkNo: formData.get("checkNo"),
+    hazardNo: formData.get("hazardNo"),
+    hazardSeq: formData.get("hazardSeq"),
+    responsibleDept: formData.get("responsibleDept"),
+    responsiblePerson: formData.get("responsiblePerson"),
+    deadline: formData.get("deadline"),
+    problem: formData.get("problem"),
+    rectificationMeasures: formData.get("rectificationMeasures"),
+    reportFilePath: formData.get("reportFilePath"),
+    progressFeedback: formData.get("progressFeedback"),
+    approvalOpinion: formData.get("approvalOpinion"),
+    acceptOpinion: formData.get("acceptOpinion"),
+    remark: formData.get("remark")
+  }, "详情", "保存");
+}
+
+function saveBusinessNetReportCandidate(event) {
+  const task = getSelectedBusinessNetTask();
+  if (!task) return;
+  const path = event.target.value;
+  const candidate = (task.reportCandidates || []).find((item) => item.path === path);
+  updateBusinessNetTask(task.id, { reportFilePath: path, reportFileName: candidate?.name || path, reportMatchStatus: "已匹配" }, "整改报告匹配", "确认");
+}
+
+function updateBusinessNetTask(id, patch, stage, result, reason = "") {
+  const task = businessNetState.data.tasks.find((item) => item.id === id);
+  if (!task) return;
+  const updated = normalizeBusinessNetTask({ ...task, ...patch, updatedAt: new Date().toISOString() });
+  businessNetState.data.tasks = businessNetState.data.tasks.map((item) => item.id === id ? updated : item);
+  addBusinessNetLog(updated.hazardNo, stage, result, reason, updated.remark);
+  saveBusinessNetData().then(() => {
+    showToast(`${stage}${result}成功`);
+    renderBusinessNetAssistant();
+  }).catch(() => showToast("保存失败"));
+}
+
+function markBusinessNetStage(stageKey, result) {
+  const stage = getBusinessNetStage(stageKey);
+  const task = getSelectedBusinessNetTask();
+  if (!stage || !task) return;
+  const status = result === "done" ? stage.done : stage.exception;
+  updateBusinessNetTask(task.id, {
+    [stage.statusKey]: status,
+    currentStatus: result === "done" ? getBusinessNetNextCurrentStatus(stageKey) : task.currentStatus
+  }, stage.title, status, result === "exception" ? "人工标记异常" : "");
+}
+
+function getBusinessNetNextCurrentStatus(stageKey) {
+  if (stageKey === "send") return "待承办";
+  if (stageKey === "accept") return "进展维护";
+  if (stageKey === "upload") return "审核状态";
+  if (stageKey === "audit") return "已闭环";
+  return "待发送行动项";
+}
+
+function getBusinessNetStage(key) {
+  return BUSINESS_NET_STAGES.find((stage) => stage.key === key);
+}
+
+function selectNextBusinessNetTask(stageKey) {
+  const stage = getBusinessNetStage(stageKey);
+  if (!stage) return;
+  const next = (businessNetState.data.tasks || []).find((task) => task[stage.statusKey] === stage.pending || task[stage.statusKey] === "异常");
+  if (!next) {
+    showToast(`没有${stage.nextButton.replace("下一条", "")}的隐患`);
+    return;
+  }
+  businessNetState.selectedTaskId = next.id;
+  businessNetState.activeStage = stage.key;
+  renderBusinessNetAssistant();
+}
+
+function copyBusinessNetField(field) {
+  const task = getSelectedBusinessNetTask();
+  if (!task) return;
+  const text = task[field] || businessNetState.data.templates[field] || "";
+  if (!text) {
+    showToast("没有可复制的内容");
+    return;
+  }
+  copyText(text).then(() => {
+    addBusinessNetLog(task.hazardNo, "复制文本", "成功", field);
+    saveBusinessNetData();
+    showToast("已复制");
+  }).catch(() => showToast("复制失败，请手动复制"));
+}
+
+function openSelectedBusinessNetReport() {
+  const task = getSelectedBusinessNetTask();
+  if (!task) return;
+  const key = task.reportFilePath || task.reportFileName;
+  const file = businessNetState.reportFileRegistry.get(key) || businessNetState.reportFileRegistry.get(task.reportFileName);
+  if (!file) {
+    showToast("当前会话未保留文件访问权限，请重新选择整改报告文件夹");
+    return;
+  }
+  const url = URL.createObjectURL(file);
+  window.open(url, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  addBusinessNetLog(task.hazardNo, "打开整改报告", "成功", key);
+  saveBusinessNetData();
+}
+
+function copySelectedBusinessNetReportPath() {
+  const task = getSelectedBusinessNetTask();
+  const text = task?.reportFilePath || task?.reportFileName || "";
+  if (!text) {
+    showToast("尚未匹配整改报告");
+    return;
+  }
+  copyText(text).then(() => showToast("报告路径已复制")).catch(() => showToast("复制失败"));
+}
+
+function saveBusinessNetTemplates(event) {
+  event.preventDefault();
+  const formData = new FormData(event.target);
+  businessNetState.data.templates = {
+    progressFeedback: String(formData.get("progressFeedback") || BUSINESS_NET_DEFAULT_TEMPLATES.progressFeedback).trim(),
+    approvalOpinion: String(formData.get("approvalOpinion") || BUSINESS_NET_DEFAULT_TEMPLATES.approvalOpinion).trim(),
+    acceptOpinion: String(formData.get("acceptOpinion") || BUSINESS_NET_DEFAULT_TEMPLATES.acceptOpinion).trim()
+  };
+  saveBusinessNetData().then(() => { showToast("模板已保存"); renderBusinessNetAssistant(); });
+}
+
+function syncBusinessNetBatchStatusOptions() {
+  const stage = getBusinessNetStage(document.querySelector("#swBatchStage")?.value || "send");
+  const select = document.querySelector("#swBatchStatus");
+  if (!stage || !select) return;
+  select.innerHTML = [stage.pending, stage.done, stage.exception].map((status) => `<option value="${escapeAttr(status)}">${escapeHtml(status)}</option>`).join("");
+}
+
+function applyBusinessNetBatchStatus() {
+  const stage = getBusinessNetStage(document.querySelector("#swBatchStage")?.value || "send");
+  const status = document.querySelector("#swBatchStatus")?.value || "";
+  const filtered = getFilteredBusinessNetTasks();
+  if (!stage || !status || !filtered.length) {
+    showToast("没有可批量更新的隐患");
+    return;
+  }
+  if (!window.confirm(`将把当前筛选出的 ${filtered.length} 条隐患的“${stage.title}”状态改为“${status}”，是否继续？`)) return;
+  const ids = new Set(filtered.map((task) => task.id));
+  businessNetState.data.tasks = businessNetState.data.tasks.map((task) => ids.has(task.id)
+    ? normalizeBusinessNetTask({ ...task, [stage.statusKey]: status, currentStatus: status === stage.done ? getBusinessNetNextCurrentStatus(stage.key) : task.currentStatus, updatedAt: new Date().toISOString() })
+    : task);
+  addBusinessNetLog("", `批量${stage.title}`, status, `影响 ${filtered.length} 条`);
+  saveBusinessNetData().then(() => { showToast("批量状态已更新"); renderBusinessNetAssistant(); });
+}
+
+function saveBusinessNetRpaSettings() {
+  businessNetState.data.rpa = {
+    enabled: Boolean(document.querySelector("#swRpaEnabled")?.checked),
+    delayMs: Number(document.querySelector("#swRpaDelay")?.value || 900),
+    retryCount: Number(document.querySelector("#swRpaRetry")?.value || 1)
+  };
+  saveBusinessNetData().then(() => showToast("RPA 设置已保存"));
+}
+
+function startBusinessNetRpaPlaceholder(stageKey) {
+  const stage = getBusinessNetStage(stageKey);
+  if (!stage) return;
+  saveBusinessNetRpaSettings();
+  if (!businessNetState.data.rpa.enabled) {
+    showToast("请先勾选启用 RPA 辅助模式");
+    return;
+  }
+  if (!window.confirm(`即将准备“${stage.title}”辅助流程。\n\n请确认：你已手动登录商网平台，并且当前页面处于该流程要求的正确位置。\n\n当前版本不会自动处理异常页面，只记录队列和提示。`)) return;
+  addBusinessNetLog("", `RPA-${stage.title}`, "已暂停等待接入", "当前网页端仅预留流程，不直接控制商网页面");
+  saveBusinessNetData().then(() => { showToast("RPA 流程已记录为等待接入"); renderBusinessNetAssistant(); });
+}
+
+function logBusinessNetRpaStop() {
+  addBusinessNetLog("", "RPA", "暂停/停止", "人工停止");
+  saveBusinessNetData().then(() => { showToast("RPA 已暂停/停止"); renderBusinessNetAssistant(); });
+}
+
+function exportBusinessNetList(type) {
+  if (type === "logs") {
+    exportBusinessNetLogs();
+    return;
+  }
+  const tasks = getBusinessNetExportRows(type);
+  if (!tasks.length) {
+    showToast("没有可导出的数据");
+    return;
+  }
+  exportBusinessNetTasksToExcel(tasks, getBusinessNetExportFileName(type));
+}
+
+function getBusinessNetExportRows(type) {
+  const tasks = businessNetState.data.tasks || [];
+  if (type === "send") return tasks.filter((task) => task.sendStatus !== "已发送");
+  if (type === "accept") return tasks.filter((task) => task.acceptStatus !== "已承办");
+  if (type === "upload") return tasks.filter((task) => task.uploadStatus !== "已上传");
+  if (type === "audit") return tasks.filter((task) => task.auditStatus !== "已审核");
+  if (type === "exception") return tasks.filter(hasBusinessNetException);
+  return tasks;
+}
+
+function getBusinessNetExportFileName(type) {
+  const names = { progress: "商网办理进度表", send: "未发送行动项清单", accept: "未承办清单", upload: "未上传整改报告清单", audit: "未审核清单", exception: "异常清单" };
+  return `${names[type] || "商网办理清单"}_${getTodayDate()}.xlsx`;
+}
+
+function exportBusinessNetTasksToExcel(tasks, fileName) {
+  const rows = tasks.map((task, index) => ({
+    序号: index + 1,
+    检查编号: task.checkNo,
+    隐患编号: task.hazardNo,
+    隐患序号: task.hazardSeq,
+    隐患内容: task.problem,
+    整改措施: task.rectificationMeasures,
+    整改责任单位: task.responsibleDept,
+    整改责任人: task.responsiblePerson,
+    整改期限: task.deadline,
+    整改报告文件路径: task.reportFilePath || task.reportFileName,
+    进展反馈: task.progressFeedback,
+    审批意见: task.approvalOpinion,
+    发送行动项状态: task.sendStatus,
+    承办状态: task.acceptStatus,
+    整改报告上传状态: task.uploadStatus,
+    审核状态: task.auditStatus,
+    商网当前状态: task.currentStatus,
+    备注: task.remark
+  }));
+  if (window.XLSX) {
+    const worksheet = window.XLSX.utils.json_to_sheet(rows);
+    const workbook = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(workbook, worksheet, "办理清单");
+    window.XLSX.writeFile(workbook, fileName);
+    showToast("导出成功");
+    return;
+  }
+  exportRowsAsCsv(rows, fileName.replace(/\.xlsx$/i, ".csv"));
+}
+
+function exportBusinessNetLogs() {
+  const rows = (businessNetState.data.logs || []).map((log) => ({ 操作时间: log.time, 隐患编号: log.hazardNo, 当前阶段: log.stage, 操作结果: log.result, 异常原因: log.reason, 用户备注: log.remark }));
+  if (!rows.length) {
+    showToast("暂无操作日志");
+    return;
+  }
+  if (window.XLSX) {
+    const worksheet = window.XLSX.utils.json_to_sheet(rows);
+    const workbook = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(workbook, worksheet, "操作日志");
+    window.XLSX.writeFile(workbook, `商网办理操作日志_${getTodayDate()}.xlsx`);
+    showToast("日志已导出");
+    return;
+  }
+  exportRowsAsCsv(rows, `商网办理操作日志_${getTodayDate()}.csv`);
+}
+
+function exportRowsAsCsv(rows, fileName) {
+  const headers = Object.keys(rows[0] || {});
+  const lines = [headers.join(","), ...rows.map((row) => headers.map((header) => `"${String(row[header] ?? "").replace(/"/g, '""')}"`).join(","))];
+  downloadTextFile(fileName, `\uFEFF${lines.join("\n")}`, "text/csv;charset=utf-8");
+  showToast("导出成功");
+}
+
+function exportBusinessNetBackup() {
+  downloadTextFile(`商网整改项办理助手全量备份_${getTodayDate()}.json`, JSON.stringify(businessNetState.data, null, 2), "application/json;charset=utf-8");
+  showToast("全量备份已导出");
+}
+
+async function clearBusinessNetData() {
+  if (!window.confirm("确认清空商网办理助手中的所有任务、模板和日志吗？此操作不可恢复。")) return;
+  businessNetState.data = createEmptyBusinessNetData();
+  businessNetState.selectedTaskId = "";
+  await saveBusinessNetData();
+  showToast("已清空");
+  renderBusinessNetAssistant();
+}
+
+function addBusinessNetLog(hazardNo, stage, result, reason = "", remark = "") {
+  if (!businessNetState.data) return;
+  businessNetState.data.logs.push(normalizeBusinessNetLog({ time: formatDateTime(new Date()), hazardNo, stage, result, reason, remark }));
+  if (businessNetState.data.logs.length > 1000) businessNetState.data.logs = businessNetState.data.logs.slice(-1000);
+}
+
+function ensureBusinessNetSelection() {
+  const tasks = getFilteredBusinessNetTasks();
+  if (!tasks.some((task) => task.id === businessNetState.selectedTaskId)) {
+    businessNetState.selectedTaskId = tasks[0]?.id || businessNetState.data?.tasks?.[0]?.id || "";
+  }
+}
+
+function getSelectedBusinessNetTask() {
+  return (businessNetState.data?.tasks || []).find((task) => task.id === businessNetState.selectedTaskId);
+}
+
+function getBusinessNetTaskOverallStatus(task) {
+  if (task.auditStatus === "已审核") return "已闭环";
+  if (hasBusinessNetException(task)) return "异常";
+  return task.currentStatus || inferBusinessNetCurrentStatus(task);
+}
+
+function summarizeText(text, maxLength = 40) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
 }
 
 function downloadTextFile(fileName, content, type) {
