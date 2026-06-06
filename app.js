@@ -2109,10 +2109,16 @@ function renderRectificationCard(taskId, hazard, feedback = {}, index) {
         <span>实际完成情况（只填“已”后面的内容）</span>
         <textarea class="textarea rectification-text" placeholder="例如：重新接通电源，恢复第二安全通道照明">${escapeHtml(feedback.completionText || "")}</textarea>
       </label>
-      <label class="field photo-field">
+      <div class="field photo-field rectification-photo-field">
         <span>整改后照片</span>
-        <input class="input file-input rectification-photo-input" type="file" accept="image/*" capture="environment" multiple>
-      </label>
+        <div class="photo-source-actions">
+          <button class="button primary rectification-camera-button" type="button">拍照</button>
+          <button class="button rectification-upload-button" type="button">上传照片</button>
+        </div>
+        <input class="hidden rectification-photo-input rectification-photo-camera-input" type="file" accept="image/*" capture="environment" multiple>
+        <input class="hidden rectification-photo-input rectification-photo-upload-input" type="file" accept="image/*" multiple>
+        <p class="field-tip">现场拍照和从相册/文件上传分开使用，保存后会合并到整改后照片。</p>
+      </div>
       <div class="photo-grid after-photo-list">
         ${(feedback.afterPhotos || []).map((photo) => `
           <figure class="photo-thumb" data-after-photo-id="${escapeAttr(photo.id)}">
@@ -2133,7 +2139,11 @@ function bindRectificationEvents(task) {
   document.querySelectorAll(".rectification-card").forEach((card) => {
     const hazardId = card.dataset.hazardId;
     card.querySelector(".save-feedback-button").addEventListener("click", () => saveFeedbackFromCard(task.id, hazardId, card));
-    card.querySelector(".rectification-photo-input").addEventListener("change", (event) => handleAfterPhotoInput(task.id, hazardId, event, card));
+    card.querySelector(".rectification-camera-button")?.addEventListener("click", () => card.querySelector(".rectification-photo-camera-input")?.click());
+    card.querySelector(".rectification-upload-button")?.addEventListener("click", () => card.querySelector(".rectification-photo-upload-input")?.click());
+    card.querySelectorAll(".rectification-photo-input").forEach((input) => {
+      input.addEventListener("change", (event) => handleAfterPhotoInput(task.id, hazardId, event, card));
+    });
     card.querySelectorAll(".after-photo-delete").forEach((button) => {
       button.addEventListener("click", async () => {
         const photoId = button.closest("[data-after-photo-id]").dataset.afterPhotoId;
@@ -3366,11 +3376,14 @@ function normalizeGovernanceData(data) {
     hazardTypes,
     classificationKeywords: normalizeGovernanceClassificationKeywordSettings(incomingSettings.classificationKeywords, hazardTypes, defaults.settings.classificationKeywords)
   };
+  const hazards = Array.isArray(data.hazards)
+    ? data.hazards.map(normalizeGovernanceHazard).map((hazard) => normalizeGovernanceHazardClassification(hazard, settings))
+    : [];
   return {
     schemaVersion: "hazard-governance-v1",
     settings,
     inspections: Array.isArray(data.inspections) ? data.inspections.map(normalizeGovernanceInspection) : [],
-    hazards: Array.isArray(data.hazards) ? data.hazards.map(normalizeGovernanceHazard) : [],
+    hazards,
     workNotes: String(data.workNotes || ""),
     updatedAt: data.updatedAt || new Date().toISOString()
   };
@@ -3378,72 +3391,60 @@ function normalizeGovernanceData(data) {
 
 function normalizeGovernanceHazardTypeSettings(input, defaults) {
   if (!input || typeof input !== "object") return defaults;
-  const keys = Object.keys(input);
-  const hasPlatformCategories = ["人的不安全行为", "物的不安全状态", "环境的不安全因素", "管理上的缺陷"].some((name) => keys.includes(name));
-  const looksLegacyDefault = ["安全管理", "设备设施", "作业环境", "消防环保"].every((name) => keys.includes(name));
-  if (!hasPlatformCategories && looksLegacyDefault) {
-    return defaults;
-  }
-  const output = {};
-  keys.forEach((key) => {
-    const values = Array.isArray(input[key]) ? input[key].filter(Boolean) : splitSettingList(String(input[key] || ""));
-    if (key && values.length) output[key] = values;
-  });
-  const merged = clonePlainObject(defaults) || {};
-  Object.entries(output).forEach(([key, values]) => {
-    merged[key] = [...new Set([...(merged[key] || []), ...values])];
-  });
-  return Object.keys(merged).length ? merged : defaults;
+  // 问题分类必须与安全环保大数据平台口径保持一致，旧数据里的额外分类不再并入选项。
+  return clonePlainObject(defaults);
 }
 
 function createDefaultGovernanceHazardTypes() {
-  const rules = createDefaultGovernanceClassificationKeywords();
-  return Object.fromEntries(Object.entries(rules).map(([hazardType, professionalMap]) => [
-    hazardType,
-    Object.keys(professionalMap)
-  ]));
+  return {
+    "人的不安全行为": ["违章指挥", "违规操作", "违规拆除", "违规攀爬", "高处作业", "个人防护", "冒险作业", "状态异常"],
+    "物的不安全状态": ["安全防护", "脚手架", "施工用电", "施工机具", "材料危险摆放", "机械设备", "车辆安全", "消防安全", "危险化学品", "气瓶", "标志标识"],
+    "环境的不安全因素": ["文明施工", "办公场所", "通道", "场地问题", "采光照明", "扬尘通风", "积水湿滑"],
+    "管理上的缺陷": ["资质证照", "机构职责", "制度体系", "教育培训", "安全投入", "应急管理", "职业健康", "环境保护", "记录许可", "交叉作业", "辐射作业", "卫生与防疫", "警示警戒监护"]
+  };
 }
 
 function createDefaultGovernanceClassificationKeywords() {
   return parseClassificationKeywordSettings(`
-人的不安全行为/个人防护: 未佩戴,安全帽,手套,防酸服,防酸手套,防酸面罩,防酸头套,劳保鞋,劳动防护品,劳动防护用品,穿戴,脱下,防护用品
-人的不安全行为/违规操作: 挪作他用,随意放置,未关闭,未固定,未上锁,未短接,未按规定区域停放,操作不当,车速过快,未及时清理,违规开关,不便操作
-人的不安全行为/冒险作业: 爬上,硫酸车顶部,打开通风口,临边,踏空,坠落,掉落,人员超过,作业人数,返出炸药,起爆线,冒险
-人的不安全行为/高处作业: 高处作业,高空作业,顶部通道,行人平台,钢直梯,护笼,生命线,防坠器,栏栅门,硫酸车顶部
-人的不安全行为/车辆驾驶: 车速过快,驾驶舱门,摩托车,装载机,铲运机,运矿卡车,洒水车,叉车,硫酸运输车,电动车,防溜车
-人的不安全行为/监护不到位: 监护人员,安全监督人,旁站监督,未进行旁站,全程密切监视,监护许可,监火人,工作负责人,安全监护人,现场监管人员,中途换人
-物的不安全状态/安全防护: 防护栏,护栏,栏杆,防护网,防护罩,护笼,格栅板,盖板,井盖,安全门,车挡,挡鼠板,围挡,警戒线,救生圈,游泳圈,防坠器,生命线,扶手
-物的不安全状态/施工用电: 配电箱,配电柜,开关箱,电缆,电线,电源线,照明线,接地,漏电,触电,插座,插排,变压器,电源开关,漏电保护,套管,裸露,时控开关,验电笔,绝缘胶垫
-物的不安全状态/消防安全: 消防,灭火器,灭火器箱,消火栓,消防栓,消防水带,水龙带,消防水管,消防管路,火灾报警器,烟感,报警器,应急照明,安全出口,消防通道,消防器材,消防应急箱,消防应急用砂,重点防火区
-物的不安全状态/机械设备: 设备,设施,水泵,潜水泵,空压机,爆破片,提升机,绞车,罐笼,摇台,安全门,凿岩台车,铲运机,破碎锤,搅拌机,柴油发电机,液压管路,油管,传感器
-物的不安全状态/提升运输: 提升,提升机,提升系统,提升运输系统,罐笼,绞车,摇台,马头门,安全门,电梯,信号台,信号灯,限载人数,人行天井,矿车,车场
-物的不安全状态/车辆安全: 车辆,小铲车,无轨设备,装载机,洒水车,叉车,硫酸运输车,车轮,三角木,矿车,运矿卡车,车架,反光镜,驾驶舱门
-物的不安全状态/危险化学品: 硫酸,硫酸库,硫酸罐,卸酸,浓硫酸,硫酸泵,硫酸管道,酸液,氯化钡,碳酸钠,PAC,聚铝,化学品,有毒化学品,危化品,MSDS,石灰,片碱,试剂,混储
+人的不安全行为/违章指挥: 违章指挥,指挥错误,强令冒险,违规指挥,盲目指挥,指令不当,安排无证人员,安排冒险作业
+人的不安全行为/违规操作: 违规操作,违章操作,操作不当,未按规程,未按规定,未按要求,擅自操作,误操作,违规开关,未关闭,未上锁,未固定,挪作他用,随意放置
+人的不安全行为/违规拆除: 违规拆除,擅自拆除,拆除防护,拆除栏杆,拆除护栏,拆除盖板,拆除警示,拆除设施,拆除标识,未恢复防护
+人的不安全行为/违规攀爬: 攀爬,违规攀爬,爬上,翻越,跨越,攀登,踩踏管线,踩踏设备,爬梯,硫酸车顶部
+人的不安全行为/高处作业: 高处作业,高空作业,临边作业,登高,脚手架作业,行人平台,钢直梯,护笼,生命线,安全带,防坠器
+人的不安全行为/个人防护: 未佩戴,未穿戴,安全帽,安全带,手套,防酸服,防酸手套,防酸面罩,防酸头套,劳保鞋,劳动防护用品,防护用品
+人的不安全行为/冒险作业: 冒险作业,冒险,盲目作业,强行作业,带病作业,临边,踏空,坠落,掉落,返出炸药,起爆线,人员超过
+人的不安全行为/状态异常: 状态异常,精神状态,酒后,疲劳,身体不适,情绪异常,反应迟缓,意识不清,带病上岗
+物的不安全状态/安全防护: 安全防护,防护栏,护栏,栏杆,防护网,防护罩,护笼,格栅板,盖板,井盖,安全门,车挡,挡鼠板,围挡,警戒线,扶手,防坠器,生命线
+物的不安全状态/脚手架: 脚手架,脚手板,扫地杆,连墙件,剪刀撑,架体,扣件,立杆,横杆,作业平台,脚手架搭设
+物的不安全状态/施工用电: 施工用电,临时用电,配电箱,配电柜,开关箱,电缆,电线,电源线,照明线,接地,漏电,触电,插座,插排,变压器,漏电保护,裸露,绝缘胶垫
+物的不安全状态/施工机具: 施工机具,电动工具,切割机,砂轮机,电焊机,手持电动工具,台钻,角磨机,气割,吊具,索具,机具防护
+物的不安全状态/材料危险摆放: 材料危险摆放,材料摆放,物料摆放,物品摆放,摆放杂乱,堆放,堆码,超高堆放,定置,分类分区,杂物,垃圾,纸箱,备件,工具,废旧物资
+物的不安全状态/机械设备: 机械设备,设备,设施,水泵,潜水泵,空压机,爆破片,提升机,绞车,罐笼,摇台,凿岩台车,破碎锤,搅拌机,柴油发电机,液压管路,油管,传感器
+物的不安全状态/车辆安全: 车辆安全,车辆,装载机,铲运机,叉车,洒水车,硫酸运输车,运矿卡车,矿车,车轮,三角木,反光镜,驾驶舱门,防溜车,车速
+物的不安全状态/消防安全: 消防安全,消防,灭火器,灭火器箱,消火栓,消防栓,消防水带,水龙带,消防水管,消防管路,火灾报警器,烟感,报警器,应急照明,安全出口,消防通道,消防器材
+物的不安全状态/危险化学品: 危险化学品,危化品,硫酸,硫酸库,硫酸罐,卸酸,浓硫酸,硫酸泵,硫酸管道,酸液,氯化钡,碳酸钠,PAC,聚铝,化学品,MSDS,片碱,试剂,混储
 物的不安全状态/气瓶: 气瓶,氧气瓶,氮气瓶,乙炔瓶,氩气瓶,气瓶室,压力表,气体泄漏,报警装置,检测周期,二氧化碳,输氧器具,压力表检定
-物的不安全状态/标志标识: 标识,标志,警示牌,警示标识,标识牌,安全标志,安全标识,安全标记,编号,标签,合格标签,检定标签,位置标记,状态标识,中段标识,指示牌,路标,告知牌,风险告知牌
-物的不安全状态/材料堆放: 杂物,垃圾,纸箱,水鞋,材料,物料,备件,工具,木头,铁桶,纸皮,废旧物资,废弃配件,物品摆放,摆放杂乱,堆放,定置,分类分区,工器具
-物的不安全状态/环保设施: 废水,废气,废物,放射性废物,危险废物,尾液池,废水处理,合格液池,应急收集池,清污分流,环保设施,排放口,尾渣,矿井水,污泥,废弃机油,泄露污染,围堰
-环境的不安全因素/通道: 通道,安全通道,消防通道,逃生通道,应急通道,维修通道,人行通道,联络道,第二安全通道,安全出口,出口,堵塞,阻塞,上锁,畅通,楼梯口,人行天井,电梯井
-环境的不安全因素/场地问题: 场地,地面,路面,斜坡道,山坡,山体,滑坡,坍塌,挡墙,泥墙,外墙,瓷砖,墙面,屋檐,砖块,台阶,矿仓,堆场,边坡,坡度
-环境的不安全因素/采场巷道: 巷道,中段,采场,掘进面,主巷,付穿,穿脉,顶板,顶帮,松石,浮石,片帮,冒顶,裂缝,锚网,支护,岩层偏软,敲帮问顶,掌子面
-环境的不安全因素/采光照明: 照明,照明灯,应急照明,行灯,路灯,光带,灯泡,灯光,照明不足,开关,线路照明
-环境的不安全因素/扬尘通风: 通风,局部通风,局部通风机,局扇,风筒,风门,漏风,风路短路,盲巷,排风扇,主风机,回风井,入风井,炮烟,粉尘,积尘,酸雾
-环境的不安全因素/积水湿滑: 积水,湿滑,滴水,渗水,漏水,水流,水沟,排水沟,排水不畅,水漫,淤泥,污泥,堵塞,疏通,沉淀池,水仓,水泵房,地沟,油污
-环境的不安全因素/文明卫生: 卫生,文明生产,文明卫生,6s,脏乱,杂乱,混乱无序,蜘蛛网,杂草,杂草丛生,树枝,落叶,垃圾,积灰,积尘,清洁,清理,办公室,烟头
-环境的不安全因素/防汛排水: 截洪沟,排水沟,水沟,消力池,清污分流,防洪,汛期,雨水,泥沙,淤积,疏通,排水,坝体,尾矿库,尾矿渣库,尾矿坝,矿井水
-环境的不安全因素/尾矿库: 尾矿库,尾矿坝,尾矿渣库,坝面,坝体,筑坝,消力池,截洪沟,清污分流,尾渣,块石,缓冲带,压实,排洪,排水,堆坝
-管理上的缺陷/制度台账: 制度,管理制度,操作规程,流程图,管理规定,责任书,职责,责任制,岗位职责,标准不统一,针对性不强,修订,更新,归档,档案,台账,清单,巡查记录,自查汇总表
-管理上的缺陷/教育培训: 培训,安全教育,培训资料,签到表,培训考试,实操培训,宣贯,交底,技术交底,班前会,应知应会,操作要点,风险识别,风险辨识,考试,视频演示
-管理上的缺陷/记录许可: 记录,检查记录,点检记录,月检记录,检维修记录,运行记录,检测记录,许可,作业票,动火作业,高风险作业,审批表,审批流程,签名,签字,上报,填报,S-ups
-管理上的缺陷/应急管理: 应急,应急预案,预案,演练,应急物资,应急救援,应急药箱,急救箱,AED,自救器,防毒面具,防酸碱服,输氧器具,逃生示意图,逃生路线图,应急疏散图,避灾硐室,应急广播
-管理上的缺陷/职业健康: 职业健康,职业病,职业危害,职业卫生,危害因素,告知牌,公示,噪声,噪音,粉尘,氡,氡子体,电离辐射,高温,检测结果,实测值,咨询电话
-管理上的缺陷/环境保护: 环保,环保风险,安全环保风险,重点环保风险,废水,废气,废物,危险废物,放射性废物,矿井水,尾液,合格液,清污分流,应急收集,排放口,泄漏,尾渣,污染
-管理上的缺陷/有限空间: 有限空间,受限空间,水仓,吸水井,风险告知牌,中毒,窒息,锁闭,作业主体,主要风险,作业风险告知牌,安全警示标识,有限空间台账
-管理上的缺陷/资质证照: 上岗证,合格证,检验合格证,检验报告,CMA章,KA证,安全生产许可证,换证,特种设备,产品合格证,证照,资质,检定,校验,检测周期,合格标签,检验标志
-管理上的缺陷/视频监控: 视频监控,监控记录,视频录像,监控探头,离线视频,视频画面,监控范围,抽检,处理时间,处理结果,视频名称,解说内容,监视,全程密切监视,电子封条
-管理上的缺陷/爆破作业: 爆破,炸药,雷管,装药,炮孔,炮烟,起爆线,爆破设计,爆破警戒,爆破网络,专用车架,爆破作业,炸药库,装药器,通风检测记录
-管理上的缺陷/人员出入: 下井人员,人员出入,入井检身,领导下井,带班,频次,主要负责人,分管领导,安全总监,技术负责,检查确认频次,作业人数,限载人数
-管理上的缺陷/交叉作业: 外来人员,协作单位,项目部,施工单位,施工队伍,施工资料,施工通知单,施工合同,安全生产协议,委托书,归档,退场项目
+物的不安全状态/标志标识: 标志标识,标识,标志,警示牌,警示标识,标识牌,安全标志,安全标识,安全标记,编号,标签,合格标签,检定标签,状态标识,指示牌,路标,告知牌,风险告知牌
+环境的不安全因素/文明施工: 文明施工,文明生产,文明卫生,6s,脏乱,杂乱,混乱无序,蜘蛛网,杂草,垃圾,积灰,积尘,清洁,清理,烟头
+环境的不安全因素/办公场所: 办公场所,办公室,办公区,办公楼,会议室,值班室,宿舍,食堂,档案室,门窗,插座,用电,消防器材
+环境的不安全因素/通道: 通道,安全通道,消防通道,逃生通道,应急通道,维修通道,人行通道,联络道,第二安全通道,安全出口,出口,堵塞,阻塞,上锁,畅通,楼梯口
+环境的不安全因素/场地问题: 场地问题,场地,地面,路面,斜坡道,山坡,山体,滑坡,坍塌,挡墙,泥墙,外墙,瓷砖,墙面,屋檐,砖块,台阶,堆场,边坡,坡度
+环境的不安全因素/采光照明: 采光照明,采光,照明,照明灯,应急照明,行灯,路灯,光带,灯泡,灯光,照明不足,开关,线路照明
+环境的不安全因素/扬尘通风: 扬尘通风,扬尘,通风,局部通风,局部通风机,局扇,风筒,风门,漏风,风路短路,盲巷,排风扇,主风机,回风井,炮烟,粉尘,积尘,酸雾
+环境的不安全因素/积水湿滑: 积水湿滑,积水,湿滑,滴水,渗水,漏水,水流,水沟,排水沟,排水不畅,水漫,淤泥,污泥,堵塞,疏通,沉淀池,地沟,油污
+管理上的缺陷/资质证照: 资质证照,上岗证,合格证,检验合格证,检验报告,CMA章,KA证,安全生产许可证,换证,特种设备,产品合格证,证照,资质,检定,校验,检测周期,检验标志
+管理上的缺陷/机构职责: 机构职责,机构,职责,责任制,岗位职责,管理职责,安全职责,人员配备,组织机构,责任书,责任清单
+管理上的缺陷/制度体系: 制度体系,制度,管理制度,操作规程,流程图,管理规定,标准不统一,针对性不强,修订,更新,归档,档案,台账,清单
+管理上的缺陷/教育培训: 教育培训,培训,安全教育,培训资料,签到表,培训考试,实操培训,宣贯,交底,技术交底,班前会,应知应会,风险识别,考试
+管理上的缺陷/安全投入: 安全投入,投入不足,安全费用,费用提取,费用使用,资金投入,安全经费,隐患治理资金,防护用品采购,设备更新
+管理上的缺陷/应急管理: 应急管理,应急,应急预案,预案,演练,应急物资,应急救援,应急药箱,急救箱,AED,自救器,防毒面具,逃生示意图,疏散图,避灾硐室,应急广播
+管理上的缺陷/职业健康: 职业健康,职业病,职业危害,职业卫生,危害因素,告知牌,公示,噪声,噪音,粉尘,氡,氡子体,电离辐射,高温,检测结果,实测值
+管理上的缺陷/环境保护: 环境保护,环保,环保风险,废水,废气,废物,危险废物,放射性废物,矿井水,尾液,合格液,清污分流,应急收集,排放口,泄漏,尾渣,污染
+管理上的缺陷/记录许可: 记录许可,记录,检查记录,点检记录,月检记录,检维修记录,运行记录,检测记录,许可,作业票,动火作业,高风险作业,审批表,审批流程,签名,签字,上报,填报
+管理上的缺陷/交叉作业: 交叉作业,外来人员,协作单位,项目部,施工单位,施工队伍,施工资料,施工通知单,施工合同,安全生产协议,委托书,退场项目
+管理上的缺陷/辐射作业: 辐射作业,放射性,辐射,射线,电离辐射,铀,放射源,辐射防护,辐射监测,个人剂量,剂量计,放射性废物
+管理上的缺陷/卫生与防疫: 卫生与防疫,卫生,防疫,消毒,传染病,食堂卫生,饮用水,公共卫生,病媒,药品,体温,防疫物资
+管理上的缺陷/警示警戒监护: 警示警戒监护,警示,警戒,监护,监护人员,安全监督人,旁站监督,未进行旁站,全程密切监视,监火人,工作负责人,安全监护人,现场监管人员
   `);
 }
 
@@ -3453,8 +3454,10 @@ function normalizeGovernanceClassificationKeywordSettings(input, hazardTypes, de
   if (source && typeof source === "object") {
     Object.entries(source).forEach(([hazardType, professionalMap]) => {
       if (!hazardType || !professionalMap || typeof professionalMap !== "object") return;
+      if (!hazardTypes?.[hazardType]) return;
       output[hazardType] = {};
       Object.entries(professionalMap).forEach(([professionalType, keywords]) => {
+        if (!(hazardTypes[hazardType] || []).includes(professionalType)) return;
         const list = Array.isArray(keywords) ? keywords : splitSettingList(String(keywords || ""));
         output[hazardType][professionalType] = [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))];
       });
@@ -3463,19 +3466,22 @@ function normalizeGovernanceClassificationKeywordSettings(input, hazardTypes, de
   }
   const merged = clonePlainObject(defaults) || {};
   Object.entries(output).forEach(([hazardType, professionalMap]) => {
+    if (!hazardTypes?.[hazardType]) return;
     if (!merged[hazardType]) merged[hazardType] = {};
     Object.entries(professionalMap).forEach(([professionalType, keywords]) => {
+      if (!(hazardTypes[hazardType] || []).includes(professionalType)) return;
       const defaultKeywords = merged[hazardType][professionalType] || [];
       merged[hazardType][professionalType] = [...new Set([...defaultKeywords, ...keywords])];
     });
   });
+  const strictMerged = {};
   Object.entries(hazardTypes || {}).forEach(([hazardType, professionalTypes]) => {
-    if (!merged[hazardType]) merged[hazardType] = {};
+    strictMerged[hazardType] = {};
     (professionalTypes || []).forEach((professionalType) => {
-      if (!merged[hazardType][professionalType]) merged[hazardType][professionalType] = [];
+      strictMerged[hazardType][professionalType] = [...new Set(merged[hazardType]?.[professionalType] || [])];
     });
   });
-  return merged;
+  return strictMerged;
 }
 
 function normalizeGovernanceInspection(item) {
@@ -3551,6 +3557,36 @@ function normalizeGovernanceHazard(item) {
   };
   hazard.autoStatus = computeGovernanceAutoStatus(hazard);
   return hazard;
+}
+
+function isStandardGovernanceClassification(hazard, settings = createDefaultGovernanceSettings()) {
+  const hazardTypes = settings.hazardTypes || createDefaultGovernanceHazardTypes();
+  return Boolean(hazard.hazardType && hazard.professionalType && (hazardTypes[hazard.hazardType] || []).includes(hazard.professionalType));
+}
+
+function normalizeGovernanceHazardClassification(hazard, settings = createDefaultGovernanceSettings()) {
+  if (isStandardGovernanceClassification(hazard, settings)) return hazard;
+  const suggestion = classifyGovernanceHazardText(hazard.problem, hazard.rectificationMeasures, settings);
+  if (suggestion) {
+    return {
+      ...hazard,
+      hazardType: suggestion.hazardType,
+      professionalType: suggestion.professionalType,
+      classificationSource: hazard.classificationSource || "规则词库",
+      classificationConfidence: hazard.classificationConfidence || suggestion.confidence,
+      classificationMatchedKeywords: hazard.classificationMatchedKeywords?.length
+        ? hazard.classificationMatchedKeywords
+        : suggestion.matchedKeywords
+    };
+  }
+  return {
+    ...hazard,
+    hazardType: "",
+    professionalType: "",
+    classificationSource: "",
+    classificationConfidence: 0,
+    classificationMatchedKeywords: []
+  };
 }
 
 function normalizeGovernancePhotos(photos) {
@@ -5538,10 +5574,16 @@ function renderGovernanceRectificationCard(hazard, index) {
               <button class="button voice-button rect-voice-button" type="button" data-action="voice-handling" data-voice-target="${escapeAttr(handlingInputId)}">语音输入</button>
             </div>
           </label>
-          <label class="field rectification-photo-field">
+          <div class="field rectification-photo-field">
             <span>整改后照片</span>
-            <input class="input rect-after-photos" type="file" accept="image/*" capture="environment" multiple>
-          </label>
+            <div class="photo-source-actions rectification-photo-actions">
+              <button class="button primary" type="button" data-action="trigger-rect-photo" data-photo-target=".rect-after-photo-camera">拍照</button>
+              <button class="button" type="button" data-action="trigger-rect-photo" data-photo-target=".rect-after-photo-upload">上传照片</button>
+            </div>
+            <input class="hidden rect-after-photos rect-after-photo-camera" type="file" accept="image/*" capture="environment" multiple>
+            <input class="hidden rect-after-photos rect-after-photo-upload" type="file" accept="image/*" multiple>
+            <p class="field-tip">现场拍照和从相册/文件上传分开使用。</p>
+          </div>
           <div class="photo-strip">
             ${(hazard.afterPhotos || []).slice(0, 4).map((photo) => `<img src="${escapeAttr(photo.dataUrl || photo.watermarkedDataUrl || "")}" alt="整改后照片">`).join("") || `<span class="hint">暂无整改后照片</span>`}
           </div>
@@ -5621,6 +5663,10 @@ function bindGovernanceRectificationEvents(content) {
         startVoiceInput(button.dataset.voiceTarget, button);
         return;
       }
+      if (button.dataset.action === "trigger-rect-photo") {
+        card.querySelector(button.dataset.photoTarget || "")?.click();
+        return;
+      }
       if (button.dataset.action === "save-rectification") {
         await saveGovernanceRectificationFromCard(card);
       }
@@ -5635,7 +5681,9 @@ async function saveGovernanceRectificationFromCard(card) {
     showToast("未找到隐患");
     return;
   }
-  const afterPhotos = await readGovernancePhotoInput(card.querySelector(".rect-after-photos").files, hazard.afterPhotos || [], "整改后");
+  const afterPhotoFiles = Array.from(card.querySelectorAll(".rect-after-photos"))
+    .flatMap((input) => Array.from(input.files || []));
+  const afterPhotos = await readGovernancePhotoInput(afterPhotoFiles, hazard.afterPhotos || [], "整改后");
   const updated = {
     ...hazard,
     currentStatus: card.querySelector(".rect-current-status").value,
@@ -6976,16 +7024,20 @@ function renderGovernanceSettingsPage(content) {
 
 async function saveGovernanceSettingsFromForm(event) {
   event.preventDefault();
+  const hazardTypes = normalizeGovernanceHazardTypeSettings(
+    parseHazardTypeSettings(document.querySelector("#setHazardTypes").value),
+    createDefaultGovernanceHazardTypes()
+  );
   governanceState.data.settings = {
     ...governanceState.data.settings,
     responsibleDepts: splitSettingList(document.querySelector("#setResponsibleDepts").value),
     supervisionLeaders: splitSettingList(document.querySelector("#setLeaders").value),
     acceptors: splitSettingList(document.querySelector("#setAcceptors").value),
     reportCompanies: splitSettingList(document.querySelector("#setReportCompanies").value),
-    hazardTypes: parseHazardTypeSettings(document.querySelector("#setHazardTypes").value),
+    hazardTypes,
     classificationKeywords: normalizeGovernanceClassificationKeywordSettings(
       parseClassificationKeywordSettings(document.querySelector("#setClassificationKeywords").value),
-      parseHazardTypeSettings(document.querySelector("#setHazardTypes").value)
+      hazardTypes
     )
   };
   await saveGovernanceData();
@@ -8357,15 +8409,11 @@ function mergeGovernanceSettingsFromHazards(hazards) {
   pushUnique("responsibleDepts", hazards.map((item) => item.responsibleDept));
   pushUnique("supervisionLeaders", hazards.map((item) => item.supervisionLeader));
   pushUnique("acceptors", hazards.map((item) => item.acceptor));
-  hazards.forEach((hazard) => {
-    if (!hazard.hazardType) return;
-    const list = governanceState.data.settings.hazardTypes[hazard.hazardType] || [];
-    if (hazard.professionalType && !list.includes(hazard.professionalType)) {
-      governanceState.data.settings.hazardTypes[hazard.hazardType] = [...list, hazard.professionalType];
-    } else if (!governanceState.data.settings.hazardTypes[hazard.hazardType]) {
-      governanceState.data.settings.hazardTypes[hazard.hazardType] = [];
-    }
-  });
+  governanceState.data.settings.hazardTypes = createDefaultGovernanceHazardTypes();
+  governanceState.data.settings.classificationKeywords = normalizeGovernanceClassificationKeywordSettings(
+    governanceState.data.settings.classificationKeywords,
+    governanceState.data.settings.hazardTypes
+  );
 }
 
 function buildGovernanceReportTask() {

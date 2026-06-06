@@ -530,6 +530,17 @@ button {
   gap: 10px;
 }
 
+.rectification-photo-actions {
+  gap: 8px;
+}
+
+.rectification-photo-actions .button,
+.rectification-photo-field .photo-source-actions .button {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 .field-tip {
   margin: 8px 0 0;
   color: var(--muted);
@@ -2520,9 +2531,13 @@ button {
   position: absolute;
   right: 10px;
   bottom: 10px;
+  display: grid;
+  place-items: center;
+  justify-self: stretch;
   min-height: 32px;
   padding: 0 12px;
   font-size: 12px;
+  text-align: center;
 }
 
 .rectification-extension-row {
@@ -3564,6 +3579,8 @@ button {
   }
 
   .rect-voice-button {
+    left: 10px;
+    right: 10px;
     min-height: 29px;
     padding: 0 10px;
     font-size: 11px;
