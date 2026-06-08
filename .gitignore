@@ -1,0 +1,6 @@
+node_modules/
+dist/
+offline-package/
+.repo-git/
+vite-preview.*.log
+vite-*.log
